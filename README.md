@@ -7,6 +7,18 @@ An MCP server that gives agents structured read and limited write access to PM2 
 
 I built this because every other approach to PM2 inspection from an agent involves either raw shell access (homelab-ops `run_command`) or scraping human-readable `pm2 status` output. This server speaks directly to `pm2 jlist`, returns typed fields, and validates service names before issuing any write operations.
 
+```mermaid
+flowchart LR
+    subgraph shell["Shell access"]
+        direction LR
+        s1["agent"] -->|"run_command\npm2 jlist"| s2["unparsed\nJSON string"]
+    end
+    subgraph mcp["pm2-mcp"]
+        direction LR
+        m1["agent"] -->|"list_services"| m2["typed fields\nstatus · uptime_ms\ncpu_pct · memory_mb"]
+    end
+```
+
 ## Tools
 
 ### Read
