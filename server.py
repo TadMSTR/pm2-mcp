@@ -4,6 +4,7 @@ Transport: streamable-http on 127.0.0.1:8486/mcp
 """
 
 import json
+import os
 import subprocess
 import time
 from typing import Optional
@@ -17,6 +18,9 @@ mcp = FastMCP(
         "to PM2 services on claudebox via typed tool calls."
     ),
 )
+
+_VALID_STATUS_FILTERS = {"online", "stopped", "errored"}
+_MAX_LOG_LINES = 500
 
 
 # ---------------------------------------------------------------------------
@@ -82,6 +86,10 @@ def list_services(status_filter: Optional[str] = None) -> list[dict]:
     Args:
         status_filter: Optional filter — "online", "stopped", or "errored".
     """
+    if status_filter and status_filter not in _VALID_STATUS_FILTERS:
+        raise ValueError(
+            f"Invalid status_filter '{status_filter}'. Valid values: online, stopped, errored"
+        )
     services = _get_all_services()
     summaries = [_parse_summary(s) for s in services]
     if status_filter:
@@ -130,11 +138,11 @@ def get_logs(name: str, lines: int = 50, include_errors: bool = True) -> dict:
 
     Args:
         name: PM2 service name.
-        lines: Number of lines to return (default 50).
+        lines: Number of lines to return (default 50, max 500).
         include_errors: Whether to include stderr log (default True).
     """
     try:
-        result = _run_pm2("logs", name, "--nostream", "--lines", str(lines))
+        result = _run_pm2("logs", name, "--nostream", "--lines", str(min(lines, _MAX_LOG_LINES)))
         return {
             "stdout": result.stdout,
             "stderr": result.stderr if include_errors else "",
@@ -193,16 +201,93 @@ def start_service(name: str) -> dict:
         return {"ok": False, "error": str(e)}
 
 
+@mcp.tool
+def reload_service(name: str) -> dict:
+    """Gracefully reload a PM2 service (zero-downtime).
+
+    Unlike restart_service, reload waits for existing connections to finish
+    before cycling the process. Preferred for production services.
+
+    Args:
+        name: PM2 service name.
+    """
+    if _find_service(name) is None:
+        return {"ok": False, "error": f"service '{name}' not found"}
+    try:
+        _run_pm2("reload", name)
+        return {"ok": True, "name": name}
+    except RuntimeError as e:
+        return {"ok": False, "error": str(e)}
+
+
+@mcp.tool
+def save() -> dict:
+    """Persist the current PM2 process list to disk.
+
+    Call after any write operation (start, stop, restart, reload) to ensure
+    the process list survives a system reboot.
+    """
+    try:
+        _run_pm2("save")
+        return {"ok": True}
+    except RuntimeError as e:
+        return {"ok": False, "error": str(e)}
+
+
+@mcp.tool
+def flush_logs(name: str) -> dict:
+    """Clear log files for a PM2 service.
+
+    Args:
+        name: PM2 service name.
+    """
+    if _find_service(name) is None:
+        return {"ok": False, "error": f"service '{name}' not found"}
+    try:
+        _run_pm2("flush", name)
+        return {"ok": True, "name": name}
+    except RuntimeError as e:
+        return {"ok": False, "error": str(e)}
+
+
+@mcp.tool
+def get_status() -> dict:
+    """Return server metadata and PM2 health summary.
+
+    Reports configured host/port, PM2 version, total service count, and
+    a breakdown of services by status. Use this to verify setup after
+    installation.
+    """
+    try:
+        version_result = _run_pm2("--version")
+        pm2_version = version_result.stdout.strip()
+    except RuntimeError:
+        pm2_version = "unknown"
+
+    try:
+        services = _get_all_services()
+        status_counts: dict[str, int] = {}
+        for s in services:
+            status = s.get("pm2_env", {}).get("status", "unknown")
+            status_counts[status] = status_counts.get(status, 0) + 1
+    except RuntimeError:
+        services = []
+        status_counts = {}
+
+    return {
+        "host": os.environ.get("MCP_HOST") or "127.0.0.1",
+        "port": int(os.environ.get("MCP_PORT") or "8486"),
+        "pm2_version": pm2_version,
+        "service_count": len(services),
+        "status_counts": status_counts,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser(description="pm2-mcp server")
-    parser.add_argument("--host", default="127.0.0.1", help="Bind host (default: 127.0.0.1)")
-    parser.add_argument("--port", type=int, default=8486, help="Bind port (default: 8486)")
-    args = parser.parse_args()
-
-    mcp.run(transport="streamable-http", host=args.host, port=args.port)
+    host = os.environ.get("MCP_HOST") or "127.0.0.1"
+    port = int(os.environ.get("MCP_PORT") or "8486")
+    mcp.run(transport="streamable-http", host=host, port=port)

@@ -114,6 +114,10 @@ class TestListServices:
             result = server.list_services()
         assert result[0]["uptime_ms"] == 0
 
+    def test_invalid_status_filter_raises(self):
+        with pytest.raises(ValueError, match="Invalid status_filter"):
+            server.list_services(status_filter="running")
+
 
 # ---------------------------------------------------------------------------
 # get_service
@@ -166,6 +170,12 @@ class TestGetLogs:
             server.get_logs("svc-a", lines=25)
 
         mock.assert_called_once_with("logs", "svc-a", "--nostream", "--lines", "25")
+
+    def test_lines_capped_at_max(self):
+        with patch("server._run_pm2", return_value=_completed(stdout="")) as mock:
+            server.get_logs("svc-a", lines=1000)
+
+        mock.assert_called_once_with("logs", "svc-a", "--nostream", "--lines", "500")
 
     def test_include_errors_false_clears_stderr(self):
         with patch("server._run_pm2", return_value=_completed(stdout="out", stderr="err")):
@@ -228,6 +238,128 @@ class TestStopService:
 
         assert result == {"ok": True, "name": "svc-a"}
         mock.assert_any_call("stop", "svc-a")
+
+
+# ---------------------------------------------------------------------------
+# start_service
+# ---------------------------------------------------------------------------
+
+class TestStartService:
+    def test_known_service_calls_start(self):
+        proc = _make_process(status="stopped")
+        with patch("server._run_pm2", side_effect=[_jlist_result(proc), _completed()]) as mock:
+            result = server.start_service("svc-a")
+
+        assert result == {"ok": True, "name": "svc-a"}
+        mock.assert_any_call("start", "svc-a")
+
+    def test_unknown_service_returns_error_without_start(self):
+        with patch("server._run_pm2", return_value=_jlist_result()) as mock:
+            result = server.start_service("ghost")
+
+        assert result["ok"] is False
+        assert "not found" in result["error"]
+        for c in mock.call_args_list:
+            assert c != call("start", "ghost")
+
+
+# ---------------------------------------------------------------------------
+# reload_service
+# ---------------------------------------------------------------------------
+
+class TestReloadService:
+    def test_known_service_calls_reload(self):
+        proc = _make_process()
+        with patch("server._run_pm2", side_effect=[_jlist_result(proc), _completed()]) as mock:
+            result = server.reload_service("svc-a")
+
+        assert result == {"ok": True, "name": "svc-a"}
+        mock.assert_any_call("reload", "svc-a")
+
+    def test_unknown_service_returns_error_without_reload(self):
+        with patch("server._run_pm2", return_value=_jlist_result()) as mock:
+            result = server.reload_service("ghost")
+
+        assert result["ok"] is False
+        assert "not found" in result["error"]
+        for c in mock.call_args_list:
+            assert c != call("reload", "ghost")
+
+
+# ---------------------------------------------------------------------------
+# save
+# ---------------------------------------------------------------------------
+
+class TestSave:
+    def test_save_calls_pm2_save(self):
+        with patch("server._run_pm2", return_value=_completed()) as mock:
+            result = server.save()
+
+        assert result == {"ok": True}
+        mock.assert_called_once_with("save")
+
+    def test_save_error_returns_error_dict(self):
+        with patch("server._run_pm2", side_effect=RuntimeError("pm2 save failed")):
+            result = server.save()
+
+        assert result["ok"] is False
+        assert "pm2 save failed" in result["error"]
+
+
+# ---------------------------------------------------------------------------
+# flush_logs
+# ---------------------------------------------------------------------------
+
+class TestFlushLogs:
+    def test_known_service_calls_flush(self):
+        proc = _make_process()
+        with patch("server._run_pm2", side_effect=[_jlist_result(proc), _completed()]) as mock:
+            result = server.flush_logs("svc-a")
+
+        assert result == {"ok": True, "name": "svc-a"}
+        mock.assert_any_call("flush", "svc-a")
+
+    def test_unknown_service_returns_error_without_flush(self):
+        with patch("server._run_pm2", return_value=_jlist_result()) as mock:
+            result = server.flush_logs("ghost")
+
+        assert result["ok"] is False
+        assert "not found" in result["error"]
+        for c in mock.call_args_list:
+            assert c != call("flush", "ghost")
+
+
+# ---------------------------------------------------------------------------
+# get_status
+# ---------------------------------------------------------------------------
+
+class TestGetStatus:
+    def test_returns_version_and_counts(self):
+        procs = [
+            _make_process(name="a", status="online"),
+            _make_process(name="b", status="stopped"),
+        ]
+        with patch("server._run_pm2", side_effect=[
+            _completed(stdout="5.0.0\n"),              # pm2 --version
+            _completed(stdout=json.dumps(procs)),      # pm2 jlist
+        ]):
+            result = server.get_status()
+
+        assert result["pm2_version"] == "5.0.0"
+        assert result["service_count"] == 2
+        assert result["status_counts"]["online"] == 1
+        assert result["status_counts"]["stopped"] == 1
+
+    def test_pm2_unavailable_returns_unknown_version(self):
+        procs = []
+        with patch("server._run_pm2", side_effect=[
+            RuntimeError("pm2 not found"),
+            _completed(stdout=json.dumps(procs)),
+        ]):
+            result = server.get_status()
+
+        assert result["pm2_version"] == "unknown"
+        assert result["service_count"] == 0
 
 
 # ---------------------------------------------------------------------------
