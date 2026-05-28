@@ -389,3 +389,29 @@ class TestRunPm2:
         assert cmd[0] == "pm2"
         # shell kwarg must be absent or False
         assert call_args.kwargs.get("shell", False) is False
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 additive tests
+# ---------------------------------------------------------------------------
+
+class TestGetServiceCreatedAtZero:
+    def test_created_at_zero_returns_none(self):
+        """created_at=0 in PM2 env should map to None, not epoch string."""
+        proc = _make_process()
+        proc["pm2_env"]["created_at"] = 0
+        with patch("server._run_pm2", return_value=_jlist_result(proc)):
+            result = server.get_service("svc-a")
+        assert result["created_at"] is None
+
+
+class TestGetLogsGuards:
+    def test_lines_zero_clamped_to_one(self):
+        with patch("server._run_pm2", return_value=_completed(stdout="")) as mock:
+            server.get_logs("svc-a", lines=0)
+        mock.assert_called_once_with("logs", "svc-a", "--nostream", "--lines", "1")
+
+    def test_lines_negative_clamped_to_one(self):
+        with patch("server._run_pm2", return_value=_completed(stdout="")) as mock:
+            server.get_logs("svc-a", lines=-5)
+        mock.assert_called_once_with("logs", "svc-a", "--nostream", "--lines", "1")

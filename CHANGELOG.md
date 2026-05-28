@@ -2,6 +2,19 @@
 
 All notable changes to pm2-mcp are documented here.
 
+## [0.3.0] — 2026-05-28
+
+### Added
+- 3 new tests: `created_at=0` in PM2 env returns `None`, `get_logs(lines=0)` clamped to 1, `get_logs(lines=-5)` clamped to 1.
+- `pyproject.toml` with version field.
+
+### Changed
+- fastmcp pin updated to `>=3.2.4,<4`.
+
+### Fixed
+- `subprocess.run`: added `encoding="utf-8"` to avoid locale-dependent decoding on non-UTF-8 systems.
+- `get_logs`: `lines` parameter is now clamped to `max(1, ...)` so zero or negative values do not reach PM2.
+
 ## [0.2.0] — 2026-04-20
 
 ### Added
