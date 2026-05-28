@@ -33,6 +33,7 @@ def _run_pm2(*args: str) -> subprocess.CompletedProcess:
         ["pm2", *args],
         capture_output=True,
         text=True,
+        encoding="utf-8",
     )
     if result.returncode != 0:
         raise RuntimeError(
@@ -142,7 +143,7 @@ def get_logs(name: str, lines: int = 50, include_errors: bool = True) -> dict:
         include_errors: Whether to include stderr log (default True).
     """
     try:
-        result = _run_pm2("logs", name, "--nostream", "--lines", str(min(lines, _MAX_LOG_LINES)))
+        result = _run_pm2("logs", name, "--nostream", "--lines", str(max(1, min(lines, _MAX_LOG_LINES))))
         return {
             "stdout": result.stdout,
             "stderr": result.stderr if include_errors else "",
