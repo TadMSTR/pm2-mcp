@@ -1,0 +1,15 @@
+[project]
+name = "pm2-mcp"
+version = "0.3.0"
+description = "FastMCP server providing structured read and limited write access to PM2 services"
+requires-python = ">=3.10"
+dependencies = [
+    "fastmcp>=3.2.4,<4",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0.0"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.backends.legacy:build"
