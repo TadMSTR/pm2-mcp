@@ -390,6 +390,34 @@ class TestRunPm2:
         # shell kwarg must be absent or False
         assert call_args.kwargs.get("shell", False) is False
 
+    def test_strips_pm2_ipc_vars_from_child_env(self, monkeypatch):
+        """Regression for PM2-1: the pm2 CLI child must not inherit PM2's IPC vars."""
+        for var in server._PM2_IPC_ENV_VARS:
+            monkeypatch.setenv(var, "leaked")
+        monkeypatch.setenv("KEEP_ME", "yes")
+
+        with patch("subprocess.run", return_value=_completed(stdout='[]')) as mock:
+            server._run_pm2("jlist")
+
+        env = mock.call_args.kwargs.get("env")
+        assert env is not None
+        for var in server._PM2_IPC_ENV_VARS:
+            assert var not in env
+        assert env["KEEP_ME"] == "yes"
+
+
+class TestCleanEnv:
+    def test_clean_env_strips_pm2_vars(self, monkeypatch):
+        for var in server._PM2_IPC_ENV_VARS:
+            monkeypatch.setenv(var, "leaked")
+        monkeypatch.setenv("KEEP_ME", "yes")
+
+        env = server._clean_env()
+
+        for var in server._PM2_IPC_ENV_VARS:
+            assert var not in env
+        assert env["KEEP_ME"] == "yes"
+
 
 # ---------------------------------------------------------------------------
 # Phase 2 additive tests

@@ -1,6 +1,6 @@
 [project]
 name = "pm2-mcp"
-version = "0.3.0"
+version = "0.3.1"
 description = "FastMCP server providing structured read and limited write access to PM2 services"
 requires-python = ">=3.10"
 dependencies = [

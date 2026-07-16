@@ -22,10 +22,26 @@ mcp = FastMCP(
 _VALID_STATUS_FILTERS = {"online", "stopped", "errored"}
 _MAX_LOG_LINES = 500
 
+# PM2 sets these variables in the process environment for its own IPC channel.
+# If they leak into spawned children, any Node.js child (node, pnpm, tsc, or any
+# node CLI) inherits a stray file descriptor and SIGABRTs during process
+# teardown — 100% reproducible via _run_pm2, 0% via a direct shell. Strip
+# them before exec so the pm2 CLI runs in a clean environment. (HLOPS-1, PM2-1)
+_PM2_IPC_ENV_VARS = (
+    "NODE_CHANNEL_FD",
+    "NODE_CHANNEL_SERIALIZATION_MODE",
+    "NODE_UNIQUE_ID",
+)
+
 
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+def _clean_env() -> dict:
+    """Return a copy of the current environment with PM2 IPC vars stripped."""
+    return {k: v for k, v in os.environ.items() if k not in _PM2_IPC_ENV_VARS}
+
 
 def _run_pm2(*args: str) -> subprocess.CompletedProcess:
     """Run a pm2 command. Raises RuntimeError if exit code is non-zero."""
@@ -34,6 +50,7 @@ def _run_pm2(*args: str) -> subprocess.CompletedProcess:
         capture_output=True,
         text=True,
         encoding="utf-8",  # explicit — system locale may not be UTF-8
+        env=_clean_env(),
     )
     if result.returncode != 0:
         raise RuntimeError(

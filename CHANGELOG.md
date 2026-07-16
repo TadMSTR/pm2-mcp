@@ -2,6 +2,11 @@
 
 All notable changes to pm2-mcp are documented here.
 
+## [0.3.1] — 2026-07-16
+
+### Fixed
+- `_run_pm2`: strip `NODE_CHANNEL_FD`, `NODE_CHANNEL_SERIALIZATION_MODE`, and `NODE_UNIQUE_ID` from the subprocess environment before invoking the `pm2` CLI. PM2 injects these for its own IPC channel; leaking them into a spawned `pm2` (Node.js) child causes a SIGABRT during teardown. (PM2-1, sibling to HLOPS-1)
+
 ## [0.3.0] — 2026-05-28
 
 ### Added
