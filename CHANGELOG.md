@@ -2,6 +2,11 @@
 
 All notable changes to pm2-mcp are documented here.
 
+## [0.3.2] — 2026-09-09
+
+### Fixed
+- `_clean_env`/`_run_pm2`: strip any environment variable starting with `CLAUDE` before invoking the `pm2` CLI, in addition to the existing IPC-var strip. `pm2 start`/`pm2 restart --update-env` ships the calling process's entire environment to the daemon as the base env for the target app; when pm2-mcp itself runs inside a Claude Code session, that froze CLAUDECODE, CLAUDE_AGENT_SDK_VERSION, CLAUDE_CODE_*, CLAUDE_PLUGIN_ROOT and others into whatever app was started or restarted — including `CLAUDE_CODE_OAUTH_TOKEN`, a live credential, found leaked into a world-readable `dump.pm2` for 9+ days. Matched by prefix rather than an enumerated list: an exact list of "known" CLAUDE_* names has already gone stale once in this codebase. (vikunja#767)
+
 ## [0.3.1] — 2026-07-16
 
 ### Fixed
