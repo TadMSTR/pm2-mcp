@@ -418,6 +418,53 @@ class TestCleanEnv:
             assert var not in env
         assert env["KEEP_ME"] == "yes"
 
+    def test_clean_env_strips_claude_session_vars(self, monkeypatch):
+        """Regression for vikunja#767: a pm2-mcp call made from inside a Claude
+        Code session must not freeze that session's env into the target app,
+        including CLAUDE_CODE_OAUTH_TOKEN (a live credential)."""
+        leaked = (
+            "CLAUDECODE",
+            "CLAUDE_AGENT_SDK_VERSION",
+            "CLAUDE_CODE_ENTRYPOINT",
+            "CLAUDE_CODE_OAUTH_TOKEN",
+            "CLAUDE_PLUGIN_ROOT",
+            "CLAUDE_PID",
+            "CLAUDE_EFFORT",
+        )
+        for var in leaked:
+            monkeypatch.setenv(var, "leaked")
+        monkeypatch.setenv("KEEP_ME", "yes")
+
+        env = server._clean_env()
+
+        for var in leaked:
+            assert var not in env
+        assert env["KEEP_ME"] == "yes"
+
+    def test_clean_env_does_not_strip_unrelated_vars_with_similar_prefix(self, monkeypatch):
+        """The match is startswith("CLAUDE"), not "CLAUD" — confirm it doesn't
+        overreach into an unrelated var that merely starts similarly."""
+        monkeypatch.setenv("CLAUDIA_UNRELATED", "keep")
+
+        env = server._clean_env()
+
+        assert env.get("CLAUDIA_UNRELATED") == "keep"
+
+    def test_run_pm2_strips_claude_session_vars_from_child_env(self, monkeypatch):
+        """Regression for vikunja#767 at the _run_pm2 call site, not just _clean_env."""
+        monkeypatch.setenv("CLAUDECODE", "1")
+        monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-leaked")
+        monkeypatch.setenv("KEEP_ME", "yes")
+
+        with patch("subprocess.run", return_value=_completed(stdout='[]')) as mock:
+            server._run_pm2("jlist")
+
+        env = mock.call_args.kwargs.get("env")
+        assert env is not None
+        assert "CLAUDECODE" not in env
+        assert "CLAUDE_CODE_OAUTH_TOKEN" not in env
+        assert env["KEEP_ME"] == "yes"
+
 
 # ---------------------------------------------------------------------------
 # Phase 2 additive tests

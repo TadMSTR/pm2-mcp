@@ -33,14 +33,36 @@ _PM2_IPC_ENV_VARS = (
     "NODE_UNIQUE_ID",
 )
 
+# `pm2 start`/`pm2 restart --update-env` ships the CLI process's entire env to
+# the daemon as the base env for the target app — an ecosystem file's `env`
+# block only adds keys on top of that, it cannot remove one. When this MCP
+# itself runs inside a Claude Code session (it does — pm2-mcp is launched the
+# same way as every other forge PM2 app), every `_run_pm2` call freezes that
+# session's env into whatever app it starts or restarts: CLAUDECODE,
+# CLAUDE_AGENT_SDK_VERSION, CLAUDE_CODE_*, CLAUDE_PLUGIN_ROOT, CLAUDE_PID,
+# CLAUDE_EFFORT — including CLAUDE_CODE_OAUTH_TOKEN, a live credential, found
+# leaked into a 0664 dump.pm2 for 9+ days (vikunja#767).
+#
+# Matched by PREFIX, not an enumerated tuple like _PM2_IPC_ENV_VARS above.
+# An exact list of "known" CLAUDE_* names has already gone stale once in this
+# codebase (CLAUDE_AGENT_SDK_VERSION was missing from an earlier hand-written
+# safe-to-strip list) and every new Claude Code release is free to add more
+# without touching this file. None of these are ever legitimate app config.
+_CLAUDE_ENV_PREFIX = "CLAUDE"
+
 
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
 
 def _clean_env() -> dict:
-    """Return a copy of the current environment with PM2 IPC vars stripped."""
-    return {k: v for k, v in os.environ.items() if k not in _PM2_IPC_ENV_VARS}
+    """Copy of the current environment, minus PM2 IPC vars and any inherited
+    Claude Code session env (CLAUDECODE, CLAUDE_*)."""
+    return {
+        k: v
+        for k, v in os.environ.items()
+        if k not in _PM2_IPC_ENV_VARS and not k.startswith(_CLAUDE_ENV_PREFIX)
+    }
 
 
 def _run_pm2(*args: str) -> subprocess.CompletedProcess:
