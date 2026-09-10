@@ -3,10 +3,35 @@ name: CI
 on:
   push:
     branches: [main]
+  # No `branches:` filter. With `branches: [main]` a pull request opened against any base
+  # other than main ran NO jobs at all — and a PR with zero checks does not look failed, it
+  # looks like CI has not started yet. Found when this very branch was opened against
+  # another feature branch and sat with no checks. Stacked PRs are exactly where the risk
+  # is highest, since the second change is reviewed against a base that is not yet merged.
   pull_request:
-    branches: [main]
 
 jobs:
+  lint:
+    name: Lint and format
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: ruff check
+        run: ruff check .
+
+      - name: ruff format --check
+        run: ruff format --check .
+
   test:
     name: Test (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
@@ -27,11 +52,39 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt -r requirements-dev.txt
 
-      - name: Import smoke test
-        run: python -c "from server import mcp, list_services, get_service, get_logs, restart_service, stop_service, start_service, reload_service, save, flush_logs, get_status"
-
+      # Coverage and its floor come from pyproject.toml's addopts, so this is the same
+      # command a developer runs locally and enforces the same 100% floor.
       - name: Run tests
         run: pytest -v
+
+  mutation:
+    name: Mutation gate (trust-boundary functions)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt -r requirements-dev.txt
+
+      # Zero surviving mutants in _clean_env and _run_pm2 — NOT a repo-wide score.
+      # _parse_summary's survivors are expected and deliberately not gated; the reasoning,
+      # and the recorded evidence that this gate goes red, are in the script itself.
+      - name: Mutation gate
+        run: scripts/mutation-gate.sh
+
+      - name: Upload mutation results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: mutmut-results
+          path: mutmut-results.txt
+          if-no-files-found: warn
 
   audit:
     name: Dependency audit
@@ -48,5 +101,58 @@ jobs:
       - name: Install pip-audit
         run: pip install pip-audit
 
+      # --strict fails the job on any vulnerability that pip-audit cannot fully resolve,
+      # rather than reporting it and exiting 0. Showcase requires it.
       - name: Audit dependencies
-        run: pip-audit -r requirements.txt
+        run: pip-audit -r requirements.txt --strict
+
+  build:
+    name: Build and verify the installed artifact
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Build wheel and sdist
+        run: |
+          pip install build
+          python -m build
+
+      # This job exists because the package was UNBUILDABLE for two releases without CI
+      # noticing (vikunja#769): build-backend was set to a name that does not exist, and
+      # the old smoke test did `python -c "from server import ..."` against the source
+      # tree, which passes whether or not the package can be built or installed.
+      #
+      # So: install the wheel into a clean venv and import from THAT, with the working
+      # directory moved out of the checkout so a stray `server.py` on the path cannot
+      # satisfy the import and hide a broken artifact.
+      - name: Install the wheel into a clean venv and smoke-test it
+        run: |
+          set -euxo pipefail
+          python -m venv /tmp/verify
+          /tmp/verify/bin/pip install --upgrade pip
+          /tmp/verify/bin/pip install dist/*.whl
+          mkdir -p /tmp/elsewhere
+          cd /tmp/elsewhere
+          test ! -e server.py
+          /tmp/verify/bin/python -c "
+          import server
+          print('imported from:', server.__file__)
+          assert '/tmp/verify/' in server.__file__, 'imported the checkout, not the wheel'
+          from server import (
+              mcp, list_services, get_service, get_logs, restart_service, stop_service,
+              start_service, reload_service, save, flush_logs, get_status,
+          )
+          print('all tools importable from the installed wheel')
+          "
+
+      - name: Upload distributions
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dist
+          path: dist/

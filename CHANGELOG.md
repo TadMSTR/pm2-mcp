@@ -2,6 +2,102 @@
 
 All notable changes to pm2-mcp are documented here.
 
+## [Unreleased]
+
+### Added
+- **Environment allowlist for the `pm2` child, in shadow mode** (vikunja#610). `_clean_env`
+  now computes a named allowlist — `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `TERM`,
+  `LANG`, `TZ`, the POSIX `LC_*` set, and `PM2_HOME` — and logs which variables enforcement
+  *would* remove, per pm2 command, by name and never by value. Behaviour is unchanged until
+  `PM2_MCP_ENV_MODE=enforce`; the default stays `shadow`.
+
+  **Honest justification, because vikunja#610's is overstated for this repo.** The ticket
+  groups pm2-mcp with `system-ops` and asserts a shared environment shape — 138 variables,
+  41 secret-shaped. Measured on the live process: 20 environment variables and **zero**
+  secret-shaped. Enforcement would withhold 13, none of them a credential. This is not
+  remediating secrets leaking today; it is structural protection against recontamination the
+  next time the service is started from a shell that has sourced one. That risk is real and
+  measurable here — the live process carries `SSH_CLIENT`, `SSH_CONNECTION` and
+  `XDG_SESSION_*`, which is what a process started from an interactive session looks like.
+
+  The IPC and `CLAUDE*` families are excluded **by construction** rather than by a rule:
+  they are simply not on the list, so there is no denylist left to fall out of sync.
+
+  `PM2_HOME` is on the allowlist although the build plan's proposed list omitted it. It
+  selects which PM2 daemon the CLI talks to, and dropping it does not fail loudly — verified
+  that a wrong `PM2_HOME` silently spawns a second daemon and reports an empty process list.
+  It happens to equal pm2's default on this host, so the omission would have been invisible
+  here and broken every read on a host with a custom value.
+- **Mutation-testing pilot**, gated on zero surviving mutants in the trust-boundary functions
+  `_clean_env` and `_run_pm2` (`scripts/mutation-gate.sh`, wired into CI). Deliberately scoped
+  rather than a repo-wide score: `_clean_env` already had zero survivors while `_parse_summary`
+  had 39, so a percentage target would have directed all the effort at dict plumbing and none
+  at the function that keeps credentials out of the `pm2` child environment. The 11 surviving
+  `_run_pm2` mutants are killed by a new test asserting the full `subprocess.run` kwarg set.
+- Negative tests for every privileged write path — `restart`, `stop`, `start`, `reload`,
+  `flush` — covering the `pm2 failed` branch that all 16 previously-uncovered lines belonged
+  to, plus both of `get_status`'s degraded paths.
+- `ruff` (lint + format) configured and enforced in CI.
+- CI now builds the wheel, installs it into a clean venv and imports from *that*, outside the
+  checkout.
+
+- **Showcase documentation set**: `ARCHITECTURE.md` (five diagrams, including the
+  environment-boundary one this repo is the case for), `CONTRIBUTING.md`,
+  `CODE_OF_CONDUCT.md`, `docs/operations.md`, `docs/threat-model.md`, GitHub issue and PR
+  templates, and `.pre-commit-config.yaml` mirroring the CI lint job.
+- `examples/` — real client wiring and a worked crash-loop diagnosis. `ecosystem.config.js`
+  is referenced rather than copied, so there is no second version to drift.
+
+### Security
+- Security audit `pm2-mcp-showcase-2026-09`: 3 findings, none above Low. All three carry
+  `SECURITY[accepted]` / `SECURITY[deferred]` annotations in `server.py` and rows in
+  `host-forge/security/accepted-risks.md`.
+  - **Accepted** — the shadow-mode log writes withheld variable *names* to the PM2 log. Names
+    only, pinned by tests with value canaries. Logging a count instead would defeat the
+    feature: a count describes the parent environment, not the command.
+  - **Accepted** — pm2's stderr reaches the caller verbatim. Pre-existing fleet-wide pattern;
+    this build's tests pin it, which is why it is now on record.
+  - **Deferred** (vikunja#771) — enforcement is verified on read paths only. Do not set
+    `PM2_MCP_ENV_MODE=enforce` until a write verb has been exercised against the live daemon.
+
+### Changed
+- Coverage floor set to **100%** and enforced from `pyproject.toml` (measured 100.00%, 49
+  tests). It was previously enforced nowhere at all.
+- `pytest.ini` folded into `pyproject.toml`; the unused `dev` extra dropped in favour of
+  `requirements-dev.txt` as the single source for dev dependencies.
+- `pip-audit` now runs with `--strict`.
+- CI runs on **every** pull request. It was filtered to `branches: [main]`, so a PR opened
+  against any other base ran no jobs at all — and a PR with zero checks reads as "CI hasn't
+  started", not as unverified. Stacked PRs are where that matters most.
+- Server instructions said this server manages PM2 services on **claudebox**; it runs on forge.
+- README badge row gains the License badge (last, per the standard order). No PyPI or version
+  badge: this repo publishes no package, and a badge pointing at a non-existent one is worse
+  than none.
+- `AGENTS.md` documented three tools that do not exist (`get_service_logs`, `delete_service`,
+  and reload as cluster-mode-only) and omitted four that do. It now matches `server.py`.
+
+### Fixed
+- **The package could not be built at all.** `build-backend` was
+  `setuptools.backends.legacy:build`, which is not a real backend — `python -m build` failed
+  with `BackendUnavailable`. This survived two releases because CI's smoke test imported
+  `server` from the source tree, so it passed on every run while the artifact was broken.
+- The built wheel is now reproducible. With auto-discovery, building after a local `mutmut run`
+  produced a wheel containing `mutants/server.py` and the whole mutant corpus but *no*
+  top-level `server.py`; `py-modules` now pins the contents regardless of the working tree.
+- `ecosystem.config.js` passed `--host`/`--port` and claimed they "take precedence".
+  `server.py` has no `argparse` and never reads `sys.argv`, so both flags were inert and the
+  bind address came from the code defaults — editing the port there would have changed nothing.
+  Dead flags removed and the comment corrected. (vikunja#770)
+- Three tests were incapable of killing any mutant while appearing healthy. mutmut's
+  trampoline reads `MUTANT_UNDER_TEST` from `os.environ` on every call, so a test that
+  replaces `os.environ` wholesale runs the *original* function under every mutant. Every
+  surviving mutant in `_clean_env` was surviving for that reason alone. The mutation gate
+  now also covers `_allowlist_env` and `_denylist_env`, which would otherwise have sat
+  outside it at exactly the moment the trust decision moved into them.
+- Tests asserting on the scrubbed environment no longer render the whole environment on
+  failure. `assert name not in env` makes pytest print every variable and value, and on forge
+  that ambient environment carries real credentials.
+
 ## [0.3.2] — 2026-09-09
 
 ### Fixed

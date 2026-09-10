@@ -7,9 +7,113 @@ dependencies = [
     "fastmcp>=3.2.4,<4",
 ]
 
-[project.optional-dependencies]
-dev = ["pytest>=8.0.0"]
+# No [project.optional-dependencies]. The `dev = ["pytest>=8.0.0"]` extra that used to sit
+# here duplicated requirements-dev.txt and nothing installed it — CI, README and AGENTS.md
+# all go through requirements-dev.txt. requirements-dev.txt is the single source for dev
+# dependencies; two lists that must be kept in sync by hand is how one of them goes stale.
 
 [build-system]
 requires = ["setuptools>=68"]
-build-backend = "setuptools.backends.legacy:build"
+# `setuptools.backends.legacy:build` was here until 2026-09-09 and is not a real backend —
+# `python -m build` failed outright with `BackendUnavailable`. The package had therefore been
+# unbuildable since the backend was written, through two releases, because ci.yml's smoke test
+# imports `server` from the source tree and never touches the built artifact. Setuptools'
+# auto-discovery picks up the flat server.py from this alone; no [tool.setuptools] py-modules
+# entry is needed. (vikunja#769)
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+# Explicit, NOT redundant — and the preflight note saying py-modules "is not required" was
+# right only about a clean tree. Setuptools' flat-layout auto-discovery infers what to ship
+# from whatever directories happen to be present, so the artifact is a function of the
+# working tree rather than of this file.
+#
+# Measured 2026-09-09: building straight after a local `mutmut run` (which leaves a
+# mutants/ directory behind) produced a wheel containing mutants/server.py and
+# mutants/tests/ and NO top-level server.py — an artifact that ships the entire mutant
+# corpus and omits the actual module. Building the same commit on a clean tree produced
+# the correct ['server.py']. CI never sees this because it builds a fresh checkout, so it
+# would have shipped from a maintainer's machine unnoticed.
+#
+# Naming the module pins the contents regardless of what else is lying around.
+py-modules = ["server"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]
+
+# Flat layout — `server` is a first-party module here, not site-packages.
+[tool.ruff.lint.isort]
+known-first-party = ["server"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Coverage is in addopts, not just in CI, so a bare `pytest` enforces the floor below. The
+# floor existing in config but only being applied by a CI flag is how a floor ends up
+# unenforced everywhere it would actually catch something — which is the state this repo was
+# in before 2026-09-09. Requires pytest-cov, which requirements-dev.txt pins.
+addopts = "--cov=server --cov-report=term-missing"
+
+[tool.coverage.run]
+source = ["server"]
+
+[tool.coverage.report]
+show_missing = true
+# MEASURED 100.00% on 2026-09-09 — 129 statements, 0 missed, 47 passing tests.
+#
+# The date is the point: an undated floor cannot be told from a stale one. This repo is the
+# argument for that. Real coverage was 88% and the floor was enforced NOWHERE, so a regression
+# to any depth would have gone unremarked; setting it to Baseline's 80 instead would have
+# permitted an eight-point drop on day one.
+#
+# 100 is not aspirational here, it is the measurement. The gap to 88 was entirely the
+# `except RuntimeError` branch of the five privileged write tools plus get_status's two
+# degraded paths — i.e. every uncovered line was a failure path on a tool that can stop or
+# restart any PM2 process on the host. Those now have named negative tests, so the floor and
+# the measurement coincide and any new untested line fails the build. If that becomes
+# genuinely impractical for a future change, lower it deliberately and record the new number
+# and date here — do not delete the line.
+fail_under = 100
+exclude_also = [
+    # The streamable-http entry point. Driving it from a test would start a real server on
+    # a real port; excluding it is honest, asserting coverage over it would not be.
+    'if __name__ == .__main__.:',
+]
+
+[tool.mutmut]
+# Mutation-testing pilot (vikunja#769). The GATE is not this config — see .github/workflows/
+# ci.yml, which filters `mutmut results` by mutant key. mutmut has no function-level scoping:
+# only_mutate/do_not_mutate take FILE globs and this repo is a single flat server.py, so
+# there is no config that expresses "mutate only the trust-boundary functions". Verified
+# against mutmut 3.7.0's own configuration.py.
+source_paths = ["server.py"]
+pytest_add_cli_args_test_selection = ["tests/"]
+# --no-cov is load-bearing, not tidiness, and this is the pilot's most transferable finding.
+#
+# [tool.pytest.ini_options].addopts turns coverage on for EVERY pytest run, carrying
+# fail_under = 100. mutmut works by rewriting server.py into mutants/server.py, where all 129
+# mutants exist side by side as separate functions and exactly one is active per run — 129
+# statements become 1107. By construction the other 128 mutants' bodies are never executed,
+# so coverage in that directory measures ~37% no matter how good the tests are.
+#
+# Measured 2026-09-09 without this line: `mutmut run` aborts immediately with
+# "failed to collect stats. runner returned 1" and evaluates ZERO mutants. Reproduced by hand
+# in mutants/: all 47 tests PASS and pytest still exits 1, purely on the coverage floor.
+#
+# The general hazard is worth stating because it outlives this repo: mutmut infers
+# killed-vs-survived from pytest's EXIT CODE alone. Any non-zero exit that does not come from
+# a failing assertion — a coverage floor, a lint hook, a plugin error — is silently read as
+# "the tests caught this mutant". Here it failed loudly and early, which was luck: a floor
+# low enough to survive stats collection would instead have marked mutants killed by the
+# gate rather than by a test, and a trust-boundary mutant nothing tests would have been
+# reported as caught.
+pytest_add_cli_args = ["--no-cov"]
+# The gate must evaluate the WHOLE trust-boundary mutant set on every run, not just the
+# mutants touching code that changed since the last commit. With change detection left on,
+# a PR that does not touch server.py could evaluate nothing and the survivor check would
+# pass having looked at no mutants. scripts/mutation-gate.sh has a positive control that
+# would catch that, but a gate should not depend on its own backstop for ordinary runs.
+use_git_change_detection = false

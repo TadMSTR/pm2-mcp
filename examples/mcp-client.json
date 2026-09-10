@@ -1,0 +1,28 @@
+{
+  "_comment": [
+    "Client configuration for pm2-mcp. This is the real block used on forge, not a sketch.",
+    "Two forms are shown: paste ONE of them (without this _comment key) into your client.",
+    "",
+    "There is no auth field because there is no authentication — see docs/threat-model.md.",
+    "The URL must stay on 127.0.0.1. Anything that can reach this port can stop or restart",
+    "every PM2 process on the host."
+  ],
+
+  "claude_code_settings_json": {
+    "mcpServers": {
+      "pm2": {
+        "type": "streamable-http",
+        "url": "http://127.0.0.1:8486/mcp"
+      }
+    }
+  },
+
+  "project_mcp_json": {
+    "mcpServers": {
+      "pm2": {
+        "type": "http",
+        "url": "http://127.0.0.1:8486/mcp"
+      }
+    }
+  }
+}
