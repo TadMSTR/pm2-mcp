@@ -2,6 +2,7 @@
 
 [![Built with Claude Code](https://img.shields.io/badge/Built_with-Claude_Code-6B57FF?logo=claude&logoColor=white)](https://claude.ai/code)
 [![CI](https://github.com/TadMSTR/pm2-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/TadMSTR/pm2-mcp/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 An MCP server that gives agents structured read and limited write access to PM2 services. Built with FastMCP, transport is streamable-http bound to localhost.
 
@@ -77,25 +78,22 @@ pip install -r requirements.txt
 
 ### Run as a PM2 process (recommended)
 
-Using `ecosystem.config.js` (recommended — add to your existing config):
-
-```js
-{
-  name: 'pm2-mcp',
-  script: 'server.py',
-  interpreter: 'python3',
-  env: {
-    PYTHONUNBUFFERED: '1',
-    MCP_HOST: '127.0.0.1',
-    MCP_PORT: '8486',
-  }
-}
-```
+This repository ships the `ecosystem.config.js` it actually deploys with — use that rather
+than the sketch this section used to contain:
 
 ```bash
 pm2 start ecosystem.config.js --only pm2-mcp
 pm2 save
 ```
+
+Three things in it are host-specific: `script` (the venv interpreter path), `cwd`, and the
+log paths. Leave the rest alone — in particular `env: {}`, which is empty deliberately and
+carries a comment explaining why. See [examples/](examples/) and
+[docs/operations.md](docs/operations.md).
+
+**Start it from PM2 at boot, not from an interactive shell.** `pm2 start` hands the calling
+shell's entire environment to the daemon, and `pm2 save` writes it to disk. That is how a
+live credential ended up in a world-readable `dump.pm2` for nine days.
 
 Or inline with env vars:
 
@@ -148,6 +146,10 @@ The server binds to `127.0.0.1` by default. Any client that can reach port 8486 
 
 The write tools (`restart_service`, `stop_service`, `start_service`, `reload_service`, `flush_logs`) validate service names against the live PM2 process list before acting. An unrecognized name returns `{ok: false, error: "service '...' not found"}` without touching PM2.
 
+Before invoking the `pm2` CLI the server scrubs its own environment — PM2's IPC variables, and anything matching the `CLAUDE` prefix. `pm2 start` and `pm2 restart --update-env` copy the caller's whole environment into the target app and `pm2 save` persists it, so this is the difference between a credential staying in memory and being written to disk.
+
+Full posture, including the gaps that are accepted rather than fixed: **[docs/threat-model.md](docs/threat-model.md)**.
+
 ---
 
 ## Testing
@@ -159,8 +161,29 @@ pytest -v
 
 All tests mock `_run_pm2` — no PM2 installation required.
 
+Coverage and its floor are configured in `pyproject.toml`, so a bare `pytest` enforces them; there is no separate CI-only flag. Changes to `_clean_env` or `_run_pm2` should also pass the mutation gate:
+
+```bash
+MUTMUT=.venv/bin/mutmut ./scripts/mutation-gate.sh
+```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for what that gate does and, more importantly, what it does not cover.
+
+---
+
+## Documentation
+
+| | |
+|---|---|
+| [ARCHITECTURE.md](ARCHITECTURE.md) | Request flow, module lifecycle, and the environment boundary |
+| [docs/operations.md](docs/operations.md) | Deploying, health checks, recovery |
+| [docs/threat-model.md](docs/threat-model.md) | What's protected, what isn't, and why |
+| [examples/](examples/) | Real client config and a worked crash-loop diagnosis |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Dev setup, test loop, mutation gate |
+| [SECURITY.md](SECURITY.md) | Reporting a vulnerability |
+
 ---
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE).

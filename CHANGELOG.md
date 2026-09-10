@@ -18,6 +18,13 @@ All notable changes to pm2-mcp are documented here.
 - CI now builds the wheel, installs it into a clean venv and imports from *that*, outside the
   checkout.
 
+- **Showcase documentation set**: `ARCHITECTURE.md` (five diagrams, including the
+  environment-boundary one this repo is the case for), `CONTRIBUTING.md`,
+  `CODE_OF_CONDUCT.md`, `docs/operations.md`, `docs/threat-model.md`, GitHub issue and PR
+  templates, and `.pre-commit-config.yaml` mirroring the CI lint job.
+- `examples/` — real client wiring and a worked crash-loop diagnosis. `ecosystem.config.js`
+  is referenced rather than copied, so there is no second version to drift.
+
 ### Changed
 - Coverage floor set to **100%** and enforced from `pyproject.toml` (measured 100.00%, 49
   tests). It was previously enforced nowhere at all.
@@ -25,6 +32,11 @@ All notable changes to pm2-mcp are documented here.
   `requirements-dev.txt` as the single source for dev dependencies.
 - `pip-audit` now runs with `--strict`.
 - Server instructions said this server manages PM2 services on **claudebox**; it runs on forge.
+- README badge row gains the License badge (last, per the standard order). No PyPI or version
+  badge: this repo publishes no package, and a badge pointing at a non-existent one is worse
+  than none.
+- `AGENTS.md` documented three tools that do not exist (`get_service_logs`, `delete_service`,
+  and reload as cluster-mode-only) and omitted four that do. It now matches `server.py`.
 
 ### Fixed
 - **The package could not be built at all.** `build-backend` was

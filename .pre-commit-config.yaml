@@ -1,0 +1,27 @@
+# Run: pre-commit install
+#
+# Deliberately mirrors the CI `lint` job and nothing more. A pre-commit hook that runs
+# checks CI doesn't (or vice versa) trains people to ignore one of them.
+#
+# The test, mutation and build jobs are NOT here on purpose: the mutation run rewrites
+# server.py into a mutants/ tree, and a commit hook that generates build artifacts in the
+# working directory is how a stray directory ends up in a wheel — which has already
+# happened once in this repo (see [tool.setuptools] in pyproject.toml).
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.14.5
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: check-added-large-files
+      - id: detect-private-key
