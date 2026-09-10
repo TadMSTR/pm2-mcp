@@ -54,6 +54,9 @@ All notable changes to pm2-mcp are documented here.
 - `pytest.ini` folded into `pyproject.toml`; the unused `dev` extra dropped in favour of
   `requirements-dev.txt` as the single source for dev dependencies.
 - `pip-audit` now runs with `--strict`.
+- CI runs on **every** pull request. It was filtered to `branches: [main]`, so a PR opened
+  against any other base ran no jobs at all — and a PR with zero checks reads as "CI hasn't
+  started", not as unverified. Stacked PRs are where that matters most.
 - Server instructions said this server manages PM2 services on **claudebox**; it runs on forge.
 - README badge row gains the License badge (last, per the standard order). No PyPI or version
   badge: this repo publishes no package, and a badge pointing at a non-existent one is worse
