@@ -317,8 +317,18 @@ def _clean_env(*command: str) -> dict:
     withheld = sorted(set(current) - set(allowed))
     if withheld:
         # SECURITY[accepted]: this line writes environment variable NAMES (never values) to
-        # /home/ted/logs/pm2-mcp.log, mode 644, on every pm2 invocation. Ted's ruling
-        # 2026-09-09. Rationale: the log sits in the service account's own home directory,
+        # /home/ted/logs/pm2-mcp.log, mode 644, on each pm2 invocation. Ted's ruling
+        # 2026-09-09, RE-CONFIRMED 2026-09-10 on a corrected premise: when first accepted
+        # this line had never once reached disk, because _configure_logging() did not exist
+        # and the logger had no level or handler (vikunja#772). The risk was accepted for a
+        # disclosure that was not happening; v0.4.0 is what makes it real. Low survives, as
+        # the reasoning below was never contingent on frequency.
+        # Measured 2026-09-10, and it is the START METHOD that governs exposure, not this
+        # code: started by PM2 at boot this names 64 variables, zero secret-shaped; started
+        # from an interactive shell, 84 of which 12 are secret-shaped. See
+        # docs/operations.md — this is the second independent reason for the vikunja#767
+        # rule against starting the service from a session shell.
+        # Rationale: the log sits in the service account's own home directory,
         # so a reader is already that account or root — and this server has no
         # authentication on 127.0.0.1:8486 at all, meaning such a reader can already stop
         # every PM2 process on the host. Names in a log they own is not the interesting
