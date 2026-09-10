@@ -3,6 +3,13 @@ __pycache__/
 .pytest_cache/
 *.egg-info/
 .env
+# SC-02: the bare `.env` above missed every other spelling. Core dumps matter here
+# specifically — this process holds the environment it is about to hand to the pm2 CLI,
+# so a dump of it is a dump of whatever that environment contained.
+*.env
+!.env.example
+core.*
+*.core
 .venv/
 .coverage
 coverage.xml
