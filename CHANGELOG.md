@@ -2,7 +2,7 @@
 
 All notable changes to pm2-mcp are documented here.
 
-## [Unreleased]
+## [0.4.0] — 2026-09-10
 
 ### Added
 
@@ -160,6 +160,20 @@ All notable changes to pm2-mcp are documented here.
   that ambient environment carries real credentials.
 
 ### Security
+- **A `--port` outside the TCP range is now refused** rather than reaching `mcp.run()` and
+  dying with an `OSError` out of `socket.bind()`. Audit finding INFO-1
+  (`pm2-mcp-followups-2026-09`). Explicitly **not** a security boundary — the loopback guard
+  runs on `host` independently, so an out-of-range port could never widen the bind — but it
+  gives bad bind input one failure mode instead of two. Port `0` stays valid: it asks the
+  kernel for an ephemeral port. Guarded on the *resolved* value, so `MCP_PORT` is covered
+  exactly like `--port`.
+- **Accepted-risk F-01 was re-confirmed on a corrected premise, not inherited.** The row
+  accepted, as LOW, that shadow logging writes withheld variable *names* to disk "on every
+  `pm2` invocation". That had never once happened — this release is what makes it true. The
+  Low rating survives (the reasoning was never contingent on frequency), but the row and the
+  inline `SECURITY[accepted]` comment now say so, and carry the new measurement showing the
+  exposure is governed by **how the process is started**, not by this code: 64 names / 0
+  secret-shaped when started by PM2 at boot, versus 84 / 12 from an interactive shell.
 
 - Security audit `pm2-mcp-showcase-2026-09`: 3 findings, none above Low. All three carry
   `SECURITY[accepted]` / `SECURITY[deferred]` annotations in `server.py` and rows in
