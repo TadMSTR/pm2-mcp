@@ -2,6 +2,46 @@
 
 All notable changes to pm2-mcp are documented here.
 
+## [Unreleased]
+
+### Added
+- **Mutation-testing pilot**, gated on zero surviving mutants in the trust-boundary functions
+  `_clean_env` and `_run_pm2` (`scripts/mutation-gate.sh`, wired into CI). Deliberately scoped
+  rather than a repo-wide score: `_clean_env` already had zero survivors while `_parse_summary`
+  had 39, so a percentage target would have directed all the effort at dict plumbing and none
+  at the function that keeps credentials out of the `pm2` child environment. The 11 surviving
+  `_run_pm2` mutants are killed by a new test asserting the full `subprocess.run` kwarg set.
+- Negative tests for every privileged write path — `restart`, `stop`, `start`, `reload`,
+  `flush` — covering the `pm2 failed` branch that all 16 previously-uncovered lines belonged
+  to, plus both of `get_status`'s degraded paths.
+- `ruff` (lint + format) configured and enforced in CI.
+- CI now builds the wheel, installs it into a clean venv and imports from *that*, outside the
+  checkout.
+
+### Changed
+- Coverage floor set to **100%** and enforced from `pyproject.toml` (measured 100.00%, 49
+  tests). It was previously enforced nowhere at all.
+- `pytest.ini` folded into `pyproject.toml`; the unused `dev` extra dropped in favour of
+  `requirements-dev.txt` as the single source for dev dependencies.
+- `pip-audit` now runs with `--strict`.
+- Server instructions said this server manages PM2 services on **claudebox**; it runs on forge.
+
+### Fixed
+- **The package could not be built at all.** `build-backend` was
+  `setuptools.backends.legacy:build`, which is not a real backend — `python -m build` failed
+  with `BackendUnavailable`. This survived two releases because CI's smoke test imported
+  `server` from the source tree, so it passed on every run while the artifact was broken.
+- The built wheel is now reproducible. With auto-discovery, building after a local `mutmut run`
+  produced a wheel containing `mutants/server.py` and the whole mutant corpus but *no*
+  top-level `server.py`; `py-modules` now pins the contents regardless of the working tree.
+- `ecosystem.config.js` passed `--host`/`--port` and claimed they "take precedence".
+  `server.py` has no `argparse` and never reads `sys.argv`, so both flags were inert and the
+  bind address came from the code defaults — editing the port there would have changed nothing.
+  Dead flags removed and the comment corrected. (vikunja#770)
+- Tests asserting on the scrubbed environment no longer render the whole environment on
+  failure. `assert name not in env` makes pytest print every variable and value, and on forge
+  that ambient environment carries real credentials.
+
 ## [0.3.2] — 2026-09-09
 
 ### Fixed

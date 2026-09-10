@@ -3,14 +3,24 @@ module.exports = {
     {
       name: "pm2-mcp",
       script: "/home/ted/repos/personal/pm2-mcp/.venv/bin/python3",
-      args: ["server.py", "--host", "127.0.0.1", "--port", "8486"],
+      args: ["server.py"],
       cwd: "/home/ted/repos/personal/pm2-mcp",
       interpreter: "none",
 
       // Empty ON PURPOSE — this server requires nothing from the environment.
-      // The only two variables the source reads are MCP_HOST and MCP_PORT, and
-      // both are supplied explicitly as --host/--port in `args` above, which
-      // take precedence. Neither is set in the running process today.
+      // The only two variables the source reads are MCP_HOST and MCP_PORT.
+      // Neither is set in the running process today, so the bind address comes
+      // from the defaults in server.py's __main__ block: 127.0.0.1:8486.
+      //
+      // `args` carried "--host 127.0.0.1 --port 8486" until 2026-09-09, and the
+      // comment here claimed they were "supplied explicitly ... which take
+      // precedence". That was false: server.py has no argparse and never reads
+      // sys.argv, so both flags were inert and the process bound 8486 only
+      // because that is the hardcoded default. The two agreed by coincidence,
+      // which is why nobody noticed — editing --port here would have changed
+      // nothing at all. The dead flags are removed rather than left as
+      // documentation of an intent the code does not implement. To pin the bind
+      // explicitly, set MCP_HOST/MCP_PORT in this block; see vikunja#770.
       //
       // Stated explicitly rather than omitted so that "no env block" can no
       // longer be read two ways. A declaration silent about env is

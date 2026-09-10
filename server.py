@@ -7,7 +7,6 @@ import json
 import os
 import subprocess
 import time
-from typing import Optional
 
 from fastmcp import FastMCP
 
@@ -15,7 +14,7 @@ mcp = FastMCP(
     name="pm2",
     instructions=(
         "PM2 process manager MCP. Provides structured read and limited write access "
-        "to PM2 services on claudebox via typed tool calls."
+        "to PM2 services on forge via typed tool calls."
     ),
 )
 
@@ -55,6 +54,7 @@ _CLAUDE_ENV_PREFIX = "CLAUDE"
 # Internal helpers
 # ---------------------------------------------------------------------------
 
+
 def _clean_env() -> dict:
     """Copy of the current environment, minus PM2 IPC vars and any inherited
     Claude Code session env (CLAUDECODE, CLAUDE_*)."""
@@ -87,7 +87,7 @@ def _get_all_services() -> list[dict]:
     return json.loads(result.stdout)
 
 
-def _find_service(name: str) -> Optional[dict]:
+def _find_service(name: str) -> dict | None:
     """Find a service by name in the current PM2 process list. Returns None if not found."""
     for s in _get_all_services():
         if s.get("name") == name:
@@ -119,8 +119,9 @@ def _parse_summary(s: dict) -> dict:
 # Tools
 # ---------------------------------------------------------------------------
 
+
 @mcp.tool
-def list_services(status_filter: Optional[str] = None) -> list[dict]:
+def list_services(status_filter: str | None = None) -> list[dict]:
     """List all PM2 services with key fields.
 
     Args:
@@ -183,7 +184,9 @@ def get_logs(name: str, lines: int = 50, include_errors: bool = True) -> dict:
     """
     try:
         # max(1, ...) — PM2 rejects --lines 0 with an error
-        result = _run_pm2("logs", name, "--nostream", "--lines", str(max(1, min(lines, _MAX_LOG_LINES))))
+        result = _run_pm2(
+            "logs", name, "--nostream", "--lines", str(max(1, min(lines, _MAX_LOG_LINES)))
+        )
         return {
             "stdout": result.stdout,
             "stderr": result.stderr if include_errors else "",
