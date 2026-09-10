@@ -141,6 +141,26 @@ for a in json.load(sys.stdin):
 **The restart timestamp must be later than the file mtime.** If it isn't, the process is
 still running the old code no matter what the repository says.
 
+**One false positive to know about, because it has already happened once.** `mtime` cannot
+tell a code change from a comment change. A docs-only commit that touches `server.py` — say,
+correcting a `SECURITY[accepted]` comment — rewrites the mtime and makes this check report a
+stale deploy even though the running process is functionally identical to `HEAD`.
+
+Before scheduling a restart on the strength of this check alone, confirm there is an actual
+behavioural difference:
+
+```bash
+# What changed in server.py since the process started, ignoring comments and blank lines?
+git diff <sha-deployed>..HEAD -- server.py \
+  | grep '^[+-]' | grep -vE '^(\+\+\+|---)' | grep -vE '^[+-]\s*(#|$)'
+```
+
+Empty output means the restart would be a no-op: leave it, and the next real deploy clears
+the discrepancy. Non-empty means the check is telling the truth and a restart is needed.
+
+This is worth the extra step in both directions. A needless restart of *this* service is not
+free — see the rule above about what re-capturing an environment can cost.
+
 ### Confirming the environment is clean
 
 ```bash
