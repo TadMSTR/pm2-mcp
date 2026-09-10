@@ -1074,11 +1074,17 @@ class TestResolveBindRefusesNonLoopback:
         [
             "0.0.0.0",
             "::",
-            "192.168.1.12",
+            # RFC 5737 / RFC 3849 documentation ranges and RFC 2606 names ONLY.
+            # This repo is public: a real host address or a real domain in a fixture
+            # publishes deployment topology to anyone who clones it, and git history
+            # keeps it after the line is edited. Synthetic values only.
+            "192.0.2.10",
+            "198.51.100.7",
+            "203.0.113.1",
             "10.0.0.1",
-            "8.8.8.8",
+            "2001:db8::1",
             "example.com",
-            "forge.helmforge.me",
+            "mcp.example.invalid",
             "",
         ],
     )
