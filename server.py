@@ -113,6 +113,15 @@ _CHILD_ENV_ALLOWLIST = frozenset(
 # purpose (see that file). Flipping to enforcement is a one-word change to this default,
 # reviewed as a diff and redeployed — not an environment variable set on a service whose
 # entire posture is that it needs none.
+# SECURITY[deferred]: enforcement has been verified against the live daemon on READ paths
+# only — pm2 jlist, --version and logs. No write verb (restart/stop/start/reload/flush/save)
+# has been exercised under the trimmed environment, and it cannot be: every _run_pm2 test
+# mocks subprocess.run, so the suite cannot see a real pm2 CLI incompatibility on a write
+# path. PM2_JSON_PROCESSING and PM2_USAGE are withheld and are set by pm2 itself.
+# Do NOT change this default to "enforce" until vikunja#771 (id 854) is closed — it carries
+# the exact command to run. Shadow-log observation does not substitute: the log says which
+# variables would go, not whether pm2 needed them.
+# Audit: 2026-09-09/pm2-mcp-showcase-2026-09 (F-03, Info). Ted's ruling 2026-09-09.
 _ENV_MODE = os.environ.get("PM2_MCP_ENV_MODE", "shadow").strip().lower()
 
 _log = logging.getLogger("pm2_mcp")
@@ -163,6 +172,22 @@ def _clean_env(*command: str) -> dict:
     current = _denylist_env()
     withheld = sorted(set(current) - set(allowed))
     if withheld:
+        # SECURITY[accepted]: this line writes environment variable NAMES (never values) to
+        # /home/ted/logs/pm2-mcp.log, mode 644, on every pm2 invocation. Ted's ruling
+        # 2026-09-09. Rationale: the log sits in the service account's own home directory,
+        # so a reader is already that account or root — and this server has no
+        # authentication on 127.0.0.1:8486 at all, meaning such a reader can already stop
+        # every PM2 process on the host. Names in a log they own is not the interesting
+        # exposure next to that.
+        # SECURITY[control]: test_shadow_log_never_contains_a_value pins the names-only
+        # property with value canaries, and test_shadow_report_has_a_stable_parseable_shape
+        # pins the format.
+        # NOT a count or a hash, which is what a reviewer will reach for next: a count of
+        # withheld variables describes the PARENT ENVIRONMENT, not the command, so it is
+        # identical on every call and predicts nothing about which callers break. That is
+        # vikunja#610's own argument and the reason names are logged at all. Replacing this
+        # with a count would leave the feature collecting no usable evidence.
+        # Audit: 2026-09-09/pm2-mcp-showcase-2026-09 (F-01, Low).
         _log.info(
             "env-allowlist shadow: pm2 %s would lose %s",
             " ".join(command) or "<no command>",
@@ -181,6 +206,13 @@ def _run_pm2(*args: str) -> subprocess.CompletedProcess:
         env=_clean_env(*args),
     )
     if result.returncode != 0:
+        # SECURITY[accepted]: pm2's stderr is embedded verbatim and reaches the MCP caller
+        # through every write tool's `except RuntimeError` branch. Ted's ruling 2026-09-09.
+        # This is the fleet-wide OE-02 class (security-patterns.md, Recurrence 21) and the
+        # same disposition as the other forge MCP servers: loopback-only, trusted callers,
+        # and for an operator tool the pm2 error IS the diagnosis. Constructed here rather
+        # than at the seven call sites so there is one place to change if that ever flips.
+        # Audit: 2026-09-09/pm2-mcp-showcase-2026-09 (F-02, Info).
         raise RuntimeError(
             f"pm2 {' '.join(args)} failed (rc={result.returncode}): {result.stderr.strip()}"
         )

@@ -48,6 +48,18 @@ All notable changes to pm2-mcp are documented here.
 - `examples/` — real client wiring and a worked crash-loop diagnosis. `ecosystem.config.js`
   is referenced rather than copied, so there is no second version to drift.
 
+### Security
+- Security audit `pm2-mcp-showcase-2026-09`: 3 findings, none above Low. All three carry
+  `SECURITY[accepted]` / `SECURITY[deferred]` annotations in `server.py` and rows in
+  `host-forge/security/accepted-risks.md`.
+  - **Accepted** — the shadow-mode log writes withheld variable *names* to the PM2 log. Names
+    only, pinned by tests with value canaries. Logging a count instead would defeat the
+    feature: a count describes the parent environment, not the command.
+  - **Accepted** — pm2's stderr reaches the caller verbatim. Pre-existing fleet-wide pattern;
+    this build's tests pin it, which is why it is now on record.
+  - **Deferred** (vikunja#771) — enforcement is verified on read paths only. Do not set
+    `PM2_MCP_ENV_MODE=enforce` until a write verb has been exercised against the live daemon.
+
 ### Changed
 - Coverage floor set to **100%** and enforced from `pyproject.toml` (measured 100.00%, 49
   tests). It was previously enforced nowhere at all.
