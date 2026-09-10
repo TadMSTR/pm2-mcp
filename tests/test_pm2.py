@@ -1107,6 +1107,42 @@ class TestResolveBindRefusesNonLoopback:
 
         assert "refusing to bind" in capsys.readouterr().err
 
+    @pytest.mark.parametrize("port", ["-1", "65536", "99999", "-8486"])
+    def test_a_port_outside_the_tcp_range_is_refused(self, port, capsys):
+        """INFO-1, audit 2026-09-10.
+
+        Not a boundary — the loopback guard runs on `host` independently, so a bad port
+        cannot widen the bind. Previously these reached mcp.run() and died with an
+        OSError out of socket.bind() well after startup began. Now they refuse in the
+        same shape and at the same point as an invalid host.
+        """
+        with pytest.raises(SystemExit) as excinfo:
+            _resolve_bind_with(["--port", port], {})
+
+        assert excinfo.value.code != 0
+        assert "outside the valid TCP range" in capsys.readouterr().err
+
+    def test_an_out_of_range_env_port_is_refused_too(self, capsys):
+        """The guard belongs to the resolved value, not to the flag — same as the host.
+
+        A check that only validated argv would leave MCP_PORT, which reaches the identical
+        bind, unguarded.
+        """
+        with pytest.raises(SystemExit):
+            _resolve_bind_with([], {"MCP_PORT": "70000"})
+
+        assert "outside the valid TCP range" in capsys.readouterr().err
+
+    @pytest.mark.parametrize("port", ["0", "1", "8486", "65535"])
+    def test_valid_ports_including_the_boundaries_are_accepted(self, port):
+        """Pins both ends of the range, so an off-by-one in either direction fails.
+
+        0 is deliberately valid: it asks the kernel for an ephemeral port. A `1 <= port`
+        or `port < 65535` spelling would break one of these four.
+        """
+        _host, resolved = _resolve_bind_with(["--port", port], {})
+        assert resolved == int(port)
+
     def test_an_explicitly_empty_host_is_refused_not_defaulted(self, capsys):
         """`--host ""` is INADDR_ANY at the socket layer, i.e. the wildcard bind.
 

@@ -249,6 +249,19 @@ def _resolve_bind(argv: list | None = None, env: dict | None = None) -> tuple:
     host = args.host if args.host is not None else env.get("MCP_HOST") or _DEFAULT_HOST
     port = args.port if args.port is not None else int(env.get("MCP_PORT") or _DEFAULT_PORT)
 
+    # SECURITY[control]: a port outside the TCP range cannot widen the bind — the loopback
+    # guard below runs on `host` independently of whatever `port` is — so this is a
+    # legibility fix, not a boundary. Without it the failure is an OSError traceback out of
+    # socket.bind() well after startup begins; with it, an invalid port refuses in the same
+    # shape and at the same point as an invalid host. Audit: 2026-09-10 /
+    # pm2-mcp-followups-2026-09 (INFO-1). 0 is deliberately IN range: it is a valid request
+    # for an ephemeral port, and is pinned by its own test.
+    if not 0 <= port <= 65535:
+        parser.error(
+            f"refusing to bind port {port}: outside the valid TCP range 0-65535. "
+            f"Port 0 is permitted and asks the kernel for an ephemeral port."
+        )
+
     if not _is_loopback(host):
         parser.error(
             f"refusing to bind {host!r}: pm2-mcp has no authentication and its write "
