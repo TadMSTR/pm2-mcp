@@ -4,6 +4,7 @@ Transport: streamable-http on 127.0.0.1:8486/mcp
 """
 
 import json
+import logging
 import os
 import subprocess
 import time
@@ -49,20 +50,125 @@ _PM2_IPC_ENV_VARS = (
 # without touching this file. None of these are ever legitimate app config.
 _CLAUDE_ENV_PREFIX = "CLAUDE"
 
+# The allowlist that replaces the denylist above (vikunja#610).
+#
+# HONEST JUSTIFICATION, because the ticket's is overstated for this repo. #610 groups
+# pm2-mcp with system-ops and asserts they share an environment shape — measured there at
+# 138 variables, 41 secret-shaped. Measured on the live pm2-mcp process: 69 keys, 20
+# actual environment variables, and ZERO secret-shaped. Because it is a long-lived PM2
+# service declared with `env: {}`, it starts clean and stays clean.
+#
+# So this is NOT remediating 41 secrets leaking today. It is structural protection against
+# recontamination the next time someone runs `pm2 start` from an interactive shell that has
+# sourced a secrets file — which is exactly how vikunja#767 happened. A denylist can only
+# refuse what it has been told to name; an allowlist refuses everything nobody argued for.
+# Overstating the justification is how the original denylist became a fleet standard, so
+# it is stated at its real strength here.
+#
+# Enumerated, never prefix-matched — the opposite choice from _CLAUDE_ENV_PREFIX above,
+# and deliberately so. A prefix on a DENYlist fails safe when it over-matches; a prefix on
+# an ALLOWlist fails open, because one careless pattern admits every variable sharing it.
+_CHILD_ENV_ALLOWLIST = frozenset(
+    {
+        "PATH",
+        "HOME",
+        "USER",
+        "LOGNAME",
+        "SHELL",
+        "TERM",
+        "LANG",
+        "TZ",
+        # The POSIX LC_* set, written out rather than matched by prefix.
+        "LC_ALL",
+        "LC_COLLATE",
+        "LC_CTYPE",
+        "LC_MESSAGES",
+        "LC_MONETARY",
+        "LC_NUMERIC",
+        "LC_TIME",
+        # PM2_HOME is NOT in the build plan's proposed list, and leaving it out would be a
+        # latent bug rather than a tightening. It selects which PM2 daemon the CLI talks
+        # to. Measured on this host it is /home/ted/.pm2, identical to the default pm2
+        # derives from $HOME — so dropping it happens to work HERE, by coincidence, the
+        # same way the inert --host/--port flags did (vikunja#770).
+        #
+        # Verified what the coincidence is hiding: running `pm2 jlist` with a PM2_HOME
+        # pointing somewhere else does not error. It silently spawns a SECOND daemon and
+        # reports an empty process list. On any host with a non-default PM2_HOME, omitting
+        # it would make every read return nothing and every write act on the wrong daemon,
+        # with no failure to notice.
+        "PM2_HOME",
+    }
+)
+
+# Shadow mode is the default and enforcement is opt-in, per the build plan: log what
+# enforcement WOULD remove before removing it.
+#
+# Two variables measured on the live process would be withheld by the list above and are
+# not obviously inert: PM2_JSON_PROCESSING and PM2_USAGE, both set by the pm2 invocation
+# that started this service. Whether the CLI cares is not something to settle by reading
+# it, which is the whole reason this ships observing rather than enforcing.
+#
+# Deliberately NOT wired through ecosystem.config.js's `env` block, which is empty on
+# purpose (see that file). Flipping to enforcement is a one-word change to this default,
+# reviewed as a diff and redeployed — not an environment variable set on a service whose
+# entire posture is that it needs none.
+_ENV_MODE = os.environ.get("PM2_MCP_ENV_MODE", "shadow").strip().lower()
+
+_log = logging.getLogger("pm2_mcp")
+
 
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
 
 
-def _clean_env() -> dict:
-    """Copy of the current environment, minus PM2 IPC vars and any inherited
-    Claude Code session env (CLAUDECODE, CLAUDE_*)."""
+def _denylist_env() -> dict:
+    """The env pm2-mcp has shipped since v0.3.2 — everything except PM2 IPC vars and
+    anything on the CLAUDE prefix."""
     return {
         k: v
         for k, v in os.environ.items()
         if k not in _PM2_IPC_ENV_VARS and not k.startswith(_CLAUDE_ENV_PREFIX)
     }
+
+
+def _allowlist_env() -> dict:
+    """Only the variables named in _CHILD_ENV_ALLOWLIST.
+
+    The PM2 IPC variables are excluded BY CONSTRUCTION here rather than by a rule: they
+    are simply not on the list, so there is nothing to keep in sync and no way to
+    reintroduce them by editing a denylist. Same for the CLAUDE family.
+    """
+    return {k: v for k, v in os.environ.items() if k in _CHILD_ENV_ALLOWLIST}
+
+
+def _clean_env(*command: str) -> dict:
+    """Environment handed to the pm2 child.
+
+    In `shadow` mode (the default) this returns the denylist result — i.e. current,
+    shipped behaviour — and logs which variables enforcement WOULD additionally remove.
+    In `enforce` mode it returns the allowlist result.
+
+    The log line carries variable NAMES and the pm2 command, never values, and never a
+    bare count. vikunja#610 makes the point that a count of withheld variables describes
+    the parent environment rather than the command, so it is identical on every call and
+    predicts nothing about which callers would break. Names and the invoking command are
+    the two things that can actually be acted on.
+    """
+    allowed = _allowlist_env()
+    if _ENV_MODE == "enforce":
+        return allowed
+
+    current = _denylist_env()
+    withheld = sorted(set(current) - set(allowed))
+    if withheld:
+        _log.info(
+            "env-allowlist shadow: pm2 %s would lose %s",
+            " ".join(command) or "<no command>",
+            ",".join(withheld),
+        )
+    return current
 
 
 def _run_pm2(*args: str) -> subprocess.CompletedProcess:
@@ -72,7 +178,7 @@ def _run_pm2(*args: str) -> subprocess.CompletedProcess:
         capture_output=True,
         text=True,
         encoding="utf-8",  # explicit — system locale may not be UTF-8
-        env=_clean_env(),
+        env=_clean_env(*args),
     )
     if result.returncode != 0:
         raise RuntimeError(

@@ -5,6 +5,29 @@ All notable changes to pm2-mcp are documented here.
 ## [Unreleased]
 
 ### Added
+- **Environment allowlist for the `pm2` child, in shadow mode** (vikunja#610). `_clean_env`
+  now computes a named allowlist — `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `TERM`,
+  `LANG`, `TZ`, the POSIX `LC_*` set, and `PM2_HOME` — and logs which variables enforcement
+  *would* remove, per pm2 command, by name and never by value. Behaviour is unchanged until
+  `PM2_MCP_ENV_MODE=enforce`; the default stays `shadow`.
+
+  **Honest justification, because vikunja#610's is overstated for this repo.** The ticket
+  groups pm2-mcp with `system-ops` and asserts a shared environment shape — 138 variables,
+  41 secret-shaped. Measured on the live process: 20 environment variables and **zero**
+  secret-shaped. Enforcement would withhold 13, none of them a credential. This is not
+  remediating secrets leaking today; it is structural protection against recontamination the
+  next time the service is started from a shell that has sourced one. That risk is real and
+  measurable here — the live process carries `SSH_CLIENT`, `SSH_CONNECTION` and
+  `XDG_SESSION_*`, which is what a process started from an interactive session looks like.
+
+  The IPC and `CLAUDE*` families are excluded **by construction** rather than by a rule:
+  they are simply not on the list, so there is no denylist left to fall out of sync.
+
+  `PM2_HOME` is on the allowlist although the build plan's proposed list omitted it. It
+  selects which PM2 daemon the CLI talks to, and dropping it does not fail loudly — verified
+  that a wrong `PM2_HOME` silently spawns a second daemon and reports an empty process list.
+  It happens to equal pm2's default on this host, so the omission would have been invisible
+  here and broken every read on a host with a custom value.
 - **Mutation-testing pilot**, gated on zero surviving mutants in the trust-boundary functions
   `_clean_env` and `_run_pm2` (`scripts/mutation-gate.sh`, wired into CI). Deliberately scoped
   rather than a repo-wide score: `_clean_env` already had zero survivors while `_parse_summary`
@@ -50,6 +73,12 @@ All notable changes to pm2-mcp are documented here.
   `server.py` has no `argparse` and never reads `sys.argv`, so both flags were inert and the
   bind address came from the code defaults — editing the port there would have changed nothing.
   Dead flags removed and the comment corrected. (vikunja#770)
+- Three tests were incapable of killing any mutant while appearing healthy. mutmut's
+  trampoline reads `MUTANT_UNDER_TEST` from `os.environ` on every call, so a test that
+  replaces `os.environ` wholesale runs the *original* function under every mutant. Every
+  surviving mutant in `_clean_env` was surviving for that reason alone. The mutation gate
+  now also covers `_allowlist_env` and `_denylist_env`, which would otherwise have sat
+  outside it at exactly the moment the trust decision moved into them.
 - Tests asserting on the scrubbed environment no longer render the whole environment on
   failure. `assert name not in env` makes pytest print every variable and value, and on forge
   that ambient environment carries real credentials.

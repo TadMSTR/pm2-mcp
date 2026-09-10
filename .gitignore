@@ -12,3 +12,4 @@ mutants/
 .mutmut-cache
 dist/
 build/
+mutmut-results.txt

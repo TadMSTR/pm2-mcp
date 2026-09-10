@@ -5,6 +5,7 @@ All _run_pm2 calls are mocked so no PM2 installation is required to run tests.
 """
 
 import json
+import logging
 import subprocess
 import time
 from unittest.mock import MagicMock, call, patch
@@ -712,3 +713,172 @@ class TestRunPm2SubprocessContract:
             server._run_pm2("restart", "svc-a")
 
         assert "pm2 restart svc-a failed (rc=1): boom" in str(excinfo.value)
+
+
+# ---------------------------------------------------------------------------
+# Environment allowlist (vikunja#610)
+# ---------------------------------------------------------------------------
+
+
+class TestEnvAllowlist:
+    def test_enforce_mode_keeps_only_allowlisted_names(self, monkeypatch):
+        monkeypatch.setattr(server, "_ENV_MODE", "enforce")
+        monkeypatch.setenv("PATH", "/usr/bin")
+        monkeypatch.setenv("HOME", "/home/ted")
+        monkeypatch.setenv("GITHUB_TOKEN", "ghp-should-not-survive")
+        monkeypatch.setenv("SOME_APP_SECRET", "also-not")
+
+        env = server._clean_env("restart", "svc-a")
+
+        assert env["PATH"] == "/usr/bin"
+        assert env["HOME"] == "/home/ted"
+        # The point of inverting the list: these were never named anywhere, and that is
+        # exactly why the denylist let them through.
+        assert _leaked_keys(env, ("GITHUB_TOKEN", "SOME_APP_SECRET")) == []
+        assert set(env) <= server._CHILD_ENV_ALLOWLIST
+
+    def test_enforce_mode_excludes_ipc_and_claude_by_construction(self, monkeypatch):
+        """Not by a rule that could be edited out — they are simply not on the list."""
+        monkeypatch.setattr(server, "_ENV_MODE", "enforce")
+        for var in server._PM2_IPC_ENV_VARS:
+            monkeypatch.setenv(var, "leaked")
+        monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-leaked")
+        monkeypatch.setenv("CLAUDECODE", "1")
+
+        env = server._clean_env("jlist")
+
+        assert _leaked_keys(env, server._PM2_IPC_ENV_VARS) == []
+        assert _leaked_keys(env, ("CLAUDE_CODE_OAUTH_TOKEN", "CLAUDECODE")) == []
+        # Neither family appears in the allowlist itself, which is the stronger statement.
+        assert _leaked_keys(server._CHILD_ENV_ALLOWLIST, server._PM2_IPC_ENV_VARS) == []
+        assert not any(k.startswith("CLAUDE") for k in server._CHILD_ENV_ALLOWLIST)
+
+    def test_allowlist_carries_pm2_home(self):
+        """PM2_HOME selects which daemon the CLI talks to.
+
+        Dropping it does not error — it silently spawns a second daemon and reports an
+        empty process list. On this host it equals pm2's own default so the omission would
+        be invisible; on a host with a custom PM2_HOME every read would return nothing.
+        """
+        assert "PM2_HOME" in server._CHILD_ENV_ALLOWLIST
+
+    def test_shadow_mode_is_the_default_and_does_not_change_behaviour(self, monkeypatch):
+        monkeypatch.setattr(server, "_ENV_MODE", "shadow")
+        monkeypatch.setenv("SOME_APP_SECRET", "still-here-in-shadow")
+
+        env = server._clean_env("jlist")
+
+        # Shadow must be a no-op on the returned value, or it isn't shadow.
+        assert env["SOME_APP_SECRET"] == "still-here-in-shadow"
+        assert env == server._denylist_env()
+
+    def test_shadow_mode_logs_withheld_names_and_the_command(self, monkeypatch, caplog):
+        monkeypatch.setattr(server, "_ENV_MODE", "shadow")
+        monkeypatch.setenv("SOME_APP_SECRET", "canary-value-must-not-be-logged")
+
+        with caplog.at_level(logging.INFO, logger="pm2_mcp"):
+            server._clean_env("restart", "svc-a")
+
+        text = caplog.text
+        assert "SOME_APP_SECRET" in text, "withheld variable names must be reported"
+        # Per vikunja#610: the command is what makes the line actionable. A report that
+        # only describes the parent environment is identical on every call.
+        assert "restart svc-a" in text
+
+    def test_shadow_log_never_contains_a_value(self, monkeypatch, caplog):
+        """The whole feature is about credentials. Logging their values would invert it."""
+        monkeypatch.setattr(server, "_ENV_MODE", "shadow")
+        monkeypatch.setenv("SOME_APP_SECRET", "canary-value-must-not-be-logged")
+        monkeypatch.setenv("ANOTHER_SECRET", "second-canary-abcdef")
+
+        with caplog.at_level(logging.INFO, logger="pm2_mcp"):
+            server._clean_env("jlist")
+
+        assert "canary-value-must-not-be-logged" not in caplog.text
+        assert "second-canary-abcdef" not in caplog.text
+
+    def test_run_pm2_passes_the_command_through_to_the_shadow_report(self, monkeypatch, caplog):
+        """The call site must forward argv, or every shadow line says '<no command>'."""
+        monkeypatch.setattr(server, "_ENV_MODE", "shadow")
+        monkeypatch.setenv("SOME_APP_SECRET", "x")
+
+        with (
+            caplog.at_level(logging.INFO, logger="pm2_mcp"),
+            patch("subprocess.run", return_value=_completed(stdout="[]")),
+        ):
+            server._run_pm2("reload", "svc-b")
+
+        assert "reload svc-b" in caplog.text
+        assert "<no command>" not in caplog.text
+
+    def test_shadow_report_is_empty_when_nothing_would_be_withheld(self, monkeypatch, caplog):
+        """Negative control: with nothing outside the allowlist, there is nothing to say.
+
+        Without this, a report that fired unconditionally would satisfy every assertion
+        above while telling an operator nothing.
+
+        The two helpers are patched rather than os.environ — see the note on
+        test_shadow_report_has_a_stable_parseable_shape.
+        """
+        monkeypatch.setattr(server, "_ENV_MODE", "shadow")
+        only_allowed = {"PATH": "/usr/bin", "HOME": "/home/ted"}
+        monkeypatch.setattr(server, "_denylist_env", lambda: dict(only_allowed))
+        monkeypatch.setattr(server, "_allowlist_env", lambda: dict(only_allowed))
+
+        with caplog.at_level(logging.INFO, logger="pm2_mcp"):
+            server._clean_env("jlist")
+
+        assert caplog.text == ""
+
+    def test_shadow_report_has_a_stable_parseable_shape(self, monkeypatch, caplog):
+        """The shadow report is this change's actual deliverable — an operator reads it to
+        decide whether enforcement is safe. Its shape is therefore a contract, not
+        decoration: a mangled separator runs every withheld name together into a single
+        token, and a report nobody can parse is the same as no report.
+
+        NEVER replace os.environ wholesale in a test in this repo. mutmut's trampoline
+        reads MUTANT_UNDER_TEST from os.environ on every call to decide which variant of a
+        function to run, so a test that swaps os.environ for a plain dict silently runs the
+        ORIGINAL function under every mutant. Such a test still counts for coverage while
+        being incapable of killing anything — and mutmut drops it from the stats mapping
+        entirely. Three tests here were written that way first; all four surviving mutants
+        in _clean_env were surviving for exactly that reason. Shape the environment with
+        monkeypatch.setenv, or patch the helpers.
+        """
+        monkeypatch.setattr(server, "_ENV_MODE", "shadow")
+        monkeypatch.setenv("PM2_MCP_CANARY_ONE", "value-one")
+        monkeypatch.setenv("PM2_MCP_CANARY_TWO", "value-two")
+
+        with caplog.at_level(logging.INFO, logger="pm2_mcp"):
+            server._clean_env("restart", "svc-a")
+
+        assert len(caplog.records) == 1
+        message = caplog.records[0].getMessage()
+
+        prefix = "env-allowlist shadow: pm2 restart svc-a would lose "
+        assert message.startswith(prefix)
+
+        names = message[len(prefix) :].split(",")
+        expected = sorted(set(server._denylist_env()) - set(server._allowlist_env()))
+        # Splitting on "," must recover exactly the withheld names. A corrupted separator
+        # fails here even though the names are all still present in the raw string.
+        assert names == expected
+        assert "PM2_MCP_CANARY_ONE" in names
+        assert "PM2_MCP_CANARY_TWO" in names
+
+    def test_shadow_report_names_the_missing_command_explicitly(self, monkeypatch, caplog):
+        """_clean_env() called with no argv still has to produce a readable line.
+
+        Nothing in the server does this today — _run_pm2 always forwards its args — but the
+        placeholder is reachable and an empty gap where the command should be would read as
+        a truncated log line rather than as a caller that passed nothing.
+        """
+        monkeypatch.setattr(server, "_ENV_MODE", "shadow")
+        monkeypatch.setenv("PM2_MCP_CANARY_ONE", "value-one")
+
+        with caplog.at_level(logging.INFO, logger="pm2_mcp"):
+            server._clean_env()
+
+        message = caplog.records[0].getMessage()
+        assert message.startswith("env-allowlist shadow: pm2 <no command> would lose ")
+        assert "PM2_MCP_CANARY_ONE" in message.split(",")
