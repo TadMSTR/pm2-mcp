@@ -198,7 +198,7 @@ Add to `~/.claude/settings.json` under `mcpServers`:
 
 ## Security
 
-The server binds to `127.0.0.1` by default. Any client that can reach port 8486 can restart or stop services — there is no authentication. This is intentional for local agent use: keep it localhost-only and don't proxy it externally.
+The server binds loopback only, and **that is enforced in code rather than defaulted** — a non-loopback `--host` or `MCP_HOST` exits non-zero instead of starting, with no override flag. See [Bind address and port](#bind-address-and-port). Any client that *can* reach port 8486 can restart or stop services, because there is no authentication. That is intentional for local agent use: keep it loopback-only and don't proxy it externally.
 
 The write tools (`restart_service`, `stop_service`, `start_service`, `reload_service`, `flush_logs`) validate service names against the live PM2 process list before acting. An unrecognized name returns `{ok: false, error: "service '...' not found"}` without touching PM2.
 
