@@ -5,6 +5,35 @@ All notable changes to pm2-mcp are documented here.
 ## [Unreleased]
 
 ### Added
+
+- **Real `--host` / `--port` support** (vikunja#770). `ecosystem.config.js` passed both flags
+  for months while `server.py` had no argument parsing and read only `MCP_HOST`/`MCP_PORT`,
+  so both were inert; the process bound 8486 from the hardcoded default and the two agreed by
+  coincidence, which is why nobody noticed. Editing `--port` there would have changed nothing.
+
+  `_resolve_bind(argv, env)` resolves with precedence **argv > env > `127.0.0.1:8486`**,
+  per field — passing only `--host` leaves the port to `MCP_PORT`.
+
+  **Non-loopback binds are refused and exit non-zero.** Only `127.0.0.0/8`, `::1` and
+  `localhost` are accepted; hostnames are refused rather than resolved, because a name can be
+  repointed after the check passes without the process restarting. This server has no
+  authentication and its write verbs can stop or restart any PM2 process on the host, so
+  `--host 0.0.0.0` would convert a documented-safe posture into a one-word footgun. There is
+  deliberately **no override flag** — shipping the escape hatch alongside the flag that makes
+  it necessary defeats the check.
+
+  Two falsiness traps closed, both surfaced by the new negative tests: `--host ""` is
+  `INADDR_ANY` at the socket layer and was being swallowed into the default rather than
+  refused, and `--port 0` is a legitimate request that `or` turned into 8486. An empty
+  *environment* variable is still treated as unset — that predates this change and is safe.
+- `_is_loopback` added to the mutation gate's trust-boundary set (6 mutants, zero survivors).
+  It is the predicate deciding whether an unauthenticated server is reachable off-box, and a
+  gate covering the environment boundary but not the network one guards the smaller of the
+  two. `_resolve_bind` is deliberately excluded and the script records why: all 15 of its
+  survivors are argparse `prog=`/`description=`/`help=` strings, while every behavioural
+  mutant — including `if not _is_loopback(host)` → `if _is_loopback(host)` — is killed.
+- README **Non-goals** section, the last outstanding Showcase README checklist item.
+
 - **Environment allowlist for the `pm2` child, in shadow mode** (vikunja#610). `_clean_env`
   now computes a named allowlist — `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `TERM`,
   `LANG`, `TZ`, the POSIX `LC_*` set, and `PM2_HOME` — and logs which variables enforcement
@@ -48,19 +77,25 @@ All notable changes to pm2-mcp are documented here.
 - `examples/` — real client wiring and a worked crash-loop diagnosis. `ecosystem.config.js`
   is referenced rather than copied, so there is no second version to drift.
 
-### Security
-- Security audit `pm2-mcp-showcase-2026-09`: 3 findings, none above Low. All three carry
-  `SECURITY[accepted]` / `SECURITY[deferred]` annotations in `server.py` and rows in
-  `host-forge/security/accepted-risks.md`.
-  - **Accepted** — the shadow-mode log writes withheld variable *names* to the PM2 log. Names
-    only, pinned by tests with value canaries. Logging a count instead would defeat the
-    feature: a count describes the parent environment, not the command.
-  - **Accepted** — pm2's stderr reaches the caller verbatim. Pre-existing fleet-wide pattern;
-    this build's tests pin it, which is why it is now on record.
-  - **Deferred** (vikunja#771) — enforcement is verified on read paths only. Do not set
-    `PM2_MCP_ENV_MODE=enforce` until a write verb has been exercised against the live daemon.
-
 ### Changed
+
+- `ecosystem.config.js` restores `--host 127.0.0.1 --port 8486`, live for the first time, and
+  now records that **`pm2 restart` does not re-read this file.** Measured: it was edited
+  2026-09-09 21:17 and the process restarted 2026-09-10 05:53, yet the live process still
+  carried args the file no longer declared. `pm2 restart` re-execs the script from disk, so
+  code changes land, but config comes from PM2's own dump.
+- `docs/threat-model.md` §1 no longer says the loopback posture "stops holding the moment
+  `MCP_HOST` is changed" — that is now false, since a non-loopback `MCP_HOST` refuses to
+  start. The bind is enforced, not defaulted.
+- `docs/operations.md` gains a measured second reason for the "never start from a session
+  shell" rule. Same code, two parents: started by PM2 the shadow log names 64 withheld
+  variables and **zero** secret-shaped; started from an interactive agent shell, 84 and
+  **12** (`TASK_QUEUE_TOKEN_*`, `LANGFUSE_SECRET_KEY`, …). Names only — values are never
+  logged and canary tests pin that — but the difference is entirely who ran the start command.
+- `pyproject.toml` coverage annotation refreshed to 176 statements / 85 tests (was 129/47,
+  already stale when written — PR #8 landed after the comment inside the same build). The
+  floor and the percentage did not move; only the measurement did.
+
 - Coverage floor set to **100%** and enforced from `pyproject.toml` (measured 100.00%, 49
   tests). It was previously enforced nowhere at all.
 - `pytest.ini` folded into `pyproject.toml`; the unused `dev` extra dropped in favour of
@@ -77,6 +112,32 @@ All notable changes to pm2-mcp are documented here.
   and reload as cluster-mode-only) and omitted four that do. It now matches `server.py`.
 
 ### Fixed
+
+- **Shadow-mode logging never reached disk** (vikunja#772). The `pm2_mcp` logger had no level
+  and no handler, so its effective level was 30 (WARNING) and every `_log.info()` was dropped
+  at the logger's level check before any handler was consulted. **Every shadow-mode run since
+  the allowlist merged produced no evidence at all** — which matters because shadow mode
+  exists solely to gather the evidence for deciding vikunja#771.
+
+  `_configure_logging()` now sets the level *and* attaches a handler, called from `__main__`.
+  Both halves are required: level-without-handler falls through to `logging.lastResort`,
+  which is itself WARNING and would drop the record anyway. The handler is attached directly
+  to `pm2_mcp` with `propagate = False`, which survives uvicorn's `dictConfig` — that calls
+  `_clearExistingHandlers()`, but `Handler.close()` de-registers without detaching the
+  handler or dropping its stream.
+
+  **Why the test suite could not see it.** Every `test_shadow_log_*` test runs under
+  `caplog.at_level(...)`, forcing a level production never had. Those tests are correct and
+  are kept — they pin the message format. What was missing was a test of the *unforced* path.
+  Verified two-sided against a neutered `_configure_logging` with its symbol and signature
+  intact: the 5 new tests fail, and all 80 pre-existing tests pass. The second half is the
+  finding — the old suite genuinely could not observe this bug. It is the same shape as the
+  CI smoke test that imported from the source tree and hid an unbuildable package: *the test
+  exercised a configuration the production path never has.*
+
+  Also verified on the real startup path rather than only in pytest, since a passing unit
+  test is exactly what failed to catch this.
+
 - **The package could not be built at all.** `build-backend` was
   `setuptools.backends.legacy:build`, which is not a real backend — `python -m build` failed
   with `BackendUnavailable`. This survived two releases because CI's smoke test imported
@@ -97,6 +158,19 @@ All notable changes to pm2-mcp are documented here.
 - Tests asserting on the scrubbed environment no longer render the whole environment on
   failure. `assert name not in env` makes pytest print every variable and value, and on forge
   that ambient environment carries real credentials.
+
+### Security
+
+- Security audit `pm2-mcp-showcase-2026-09`: 3 findings, none above Low. All three carry
+  `SECURITY[accepted]` / `SECURITY[deferred]` annotations in `server.py` and rows in
+  `host-forge/security/accepted-risks.md`.
+  - **Accepted** — the shadow-mode log writes withheld variable *names* to the PM2 log. Names
+    only, pinned by tests with value canaries. Logging a count instead would defeat the
+    feature: a count describes the parent environment, not the command.
+  - **Accepted** — pm2's stderr reaches the caller verbatim. Pre-existing fleet-wide pattern;
+    this build's tests pin it, which is why it is now on record.
+  - **Deferred** (vikunja#771) — enforcement is verified on read paths only. Do not set
+    `PM2_MCP_ENV_MODE=enforce` until a write verb has been exercised against the live daemon.
 
 ## [0.3.2] — 2026-09-09
 
