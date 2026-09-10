@@ -64,6 +64,27 @@ flowchart LR
 
 ---
 
+## Non-goals
+
+Things this server deliberately does not do. Each is a decision, not a gap:
+
+- **It does not register new PM2 processes.** `start_service` resumes a process PM2 already
+  knows about; it will not create one. Registering a process means deciding its script,
+  interpreter, working directory, log paths and environment — that belongs in a reviewed
+  `ecosystem.config.js`, not in an agent tool call.
+- **There is no `delete` verb, and there will not be one.** `pm2 delete` discards the
+  process definition, and re-creating it re-captures the calling shell's environment — the
+  exact mechanism behind [#767](https://github.com/TadMSTR/pm2-mcp/issues/767). The
+  destructive verb with the worst failure mode is the one least worth automating.
+- **It has no authentication, by design.** It binds loopback only and is expected to stay
+  that way. Adding auth would imply the port could safely be exposed, which is not the
+  posture this server is built for. See [docs/threat-model.md](docs/threat-model.md).
+- **It does not publish an installable artefact.** No PyPI package, no version badge. It is
+  deployed from a checkout as a PM2 process. This is why Showcase is its terminal tier
+  rather than a step toward Flagship.
+- **It does not manage the PM2 daemon itself** — no `pm2 kill`, no daemon resurrection, no
+  startup-script installation. Those are host administration, not process inspection.
+
 ## Setup
 
 ### Requirements
@@ -107,19 +128,54 @@ The server manages itself like any other PM2 service — it will appear in its o
 ### Run directly
 
 ```bash
-python server.py
+python server.py                                    # 127.0.0.1:8486
+python server.py --port 9000                        # override the port only
+python server.py --host 127.0.0.2 --port 9000       # both
+python server.py --help                             # full usage
 ```
+
+Non-loopback binds are refused; see [Bind address and port](#bind-address-and-port).
 
 ---
 
-## Environment Variables
+## Bind address and port
+
+The bind is resolved from three sources, in this order of precedence:
+
+| Precedence | Source | Example |
+|---|---|---|
+| 1 (highest) | Command-line flags | `--host 127.0.0.1 --port 8486` |
+| 2 | Environment variables | `MCP_HOST`, `MCP_PORT` |
+| 3 (lowest) | Built-in defaults | `127.0.0.1`, `8486` |
+
+Precedence is per-field, not all-or-nothing: passing only `--host` leaves the port to
+`MCP_PORT` or the default.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `MCP_HOST` | `127.0.0.1` | Bind address for the MCP server |
+| `MCP_HOST` | `127.0.0.1` | Bind address. Must be loopback. |
 | `MCP_PORT` | `8486` | Port for the MCP server |
 
-Copy `.env.example` to `.env` and fill in the values you need. Blank values use the defaults shown above.
+Copy `.env.example` to `.env` and fill in the values you need. Blank environment variables
+are treated as unset and use the defaults shown above.
+
+### The bind is loopback-only, and that is enforced
+
+`--host` and `MCP_HOST` accept `127.0.0.0/8`, `::1` and `localhost`. **Anything else exits
+non-zero instead of starting** — including `0.0.0.0`, a LAN address, and any hostname.
+
+This is deliberate and there is **no override flag**. pm2-mcp has no authentication of any
+kind, and its write verbs can stop or restart any PM2 process on the host. A `--host` that
+accepted `0.0.0.0` would turn a documented-safe posture into a one-word footgun, so the
+refusal is in code rather than in a comment. See [docs/threat-model.md](docs/threat-model.md).
+
+A hostname is refused rather than resolved: a name can point anywhere, and can be repointed
+after the check passes without the process restarting, so resolution is not a security
+boundary.
+
+> **Note:** these flags were accepted but silently ignored before v0.4.0 — `server.py` had no
+> argument parsing and read only `MCP_HOST`/`MCP_PORT`. They are live as of
+> [#770](https://github.com/TadMSTR/pm2-mcp/issues/770).
 
 ---
 

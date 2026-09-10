@@ -32,6 +32,65 @@ and `pm2 save` then writes them to disk. `_clean_env()` protects the *children* 
 spawns; it cannot protect pm2-mcp's own process environment, which is set by whoever started
 it.
 
+Since v0.4.0 there is a **second, independent reason**, and it is new. vikunja#772 fixed the
+logger, so shadow mode now actually writes to disk — which means the *names* of every
+withheld variable in the starting shell's environment land in `/home/ted/logs/pm2-mcp.log`.
+Measured 2026-09-10, same code, two different parents:
+
+| Started by | Names withheld | Of which secret-shaped |
+|---|---|---|
+| PM2 at boot | 64 | **0** |
+| An interactive agent shell | 84 | **12** (`TASK_QUEUE_TOKEN_*`, `LANGFUSE_SECRET_KEY`, …) |
+
+Values are never logged and there are canary tests pinning that. But variable *names* are
+still a disclosure, and the difference between those two rows is entirely who ran the start
+command. The log is mode 644 in the service account's home.
+
+## Choosing the bind address
+
+Resolved with precedence **command-line flags > `MCP_HOST`/`MCP_PORT` > `127.0.0.1:8486`**,
+per field. Passing only `--host` leaves the port to the environment or the default. An empty
+environment variable is treated as unset; an explicitly empty `--host ""` is refused, because
+an empty host is a wildcard bind at the socket layer.
+
+`ecosystem.config.js` passes `--host 127.0.0.1 --port 8486` explicitly. Those flags are live
+as of v0.4.0 (vikunja#770) — before that `server.py` had no argument parsing, so the same two
+flags sat in `args` doing nothing while the process bound 8486 from the hardcoded default.
+They agreed by coincidence, which is why it went unnoticed for months.
+
+### Non-loopback binds are refused
+
+Only `127.0.0.0/8`, `::1` and `localhost` are accepted. Anything else — `0.0.0.0`, a LAN
+address, any hostname — exits non-zero with a message rather than starting:
+
+```
+pm2-mcp: error: refusing to bind '0.0.0.0': pm2-mcp has no authentication and its write
+verbs can stop any PM2 process on the host, so it binds loopback only ...
+```
+
+There is deliberately no override flag. If you genuinely need a non-loopback bind, that is a
+reviewable change to this repo with its own audit — not an operational toggle. Put a
+reverse proxy in front of the loopback port instead, and give it authentication.
+
+If you see this error after a config change, the fix is the config, not the guard.
+
+### Changing `ecosystem.config.js` needs more than `pm2 restart`
+
+`pm2 restart` re-execs the script from disk, so **code** changes land. It re-reads its
+configuration from PM2's own dump, not from `ecosystem.config.js`, so **config** changes do
+not. Measured 2026-09-10: the file was edited 2026-09-09 21:17 and the process restarted
+2026-09-10 05:53, yet the live process still carried `args` the file no longer declared.
+
+Applying a change to that file needs:
+
+```bash
+pm2 delete pm2-mcp && pm2 start ecosystem.config.js --only pm2-mcp && pm2 save
+```
+
+**Do that from a clean shell or at boot, never from an interactive agent session** — see the
+rule above. `pm2 start` re-captures the calling shell's entire environment, and since v0.4.0
+the shadow log records the names of everything withheld.
+
 ## Health check
 
 ```bash

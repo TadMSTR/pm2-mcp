@@ -62,7 +62,12 @@ source = ["server"]
 
 [tool.coverage.report]
 show_missing = true
-# MEASURED 100.00% on 2026-09-09 — 129 statements, 0 missed, 47 passing tests.
+# MEASURED 100.00% on 2026-09-10 — 176 statements, 0 missed, 85 passing tests.
+#
+# Previous annotation read "2026-09-09 — 129 statements, 47 passing tests" and had already
+# drifted when it was written: PR #8 landed inside the same build, after the comment. The
+# jump to 176/85 is vikunja#772 (_configure_logging) and #770 (_resolve_bind, _is_loopback)
+# plus their tests. The percentage and the floor did not move; only the measurement did.
 #
 # The date is the point: an undated floor cannot be told from a stale one. This repo is the
 # argument for that. Real coverage was 88% and the floor was enforced NOWHERE, so a regression

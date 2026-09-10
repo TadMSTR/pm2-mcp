@@ -4,6 +4,7 @@ Tests for pm2-mcp server.py.
 All _run_pm2 calls are mocked so no PM2 installation is required to run tests.
 """
 
+import io
 import json
 import logging
 import subprocess
@@ -882,3 +883,262 @@ class TestEnvAllowlist:
         message = caplog.records[0].getMessage()
         assert message.startswith("env-allowlist shadow: pm2 <no command> would lose ")
         assert "PM2_MCP_CANARY_ONE" in message.split(",")
+
+
+@pytest.fixture
+def restored_logger_state():
+    """Snapshot and restore every global on the `pm2_mcp` logger.
+
+    _configure_logging() mutates module-level state that outlives the test: it sets the
+    level, sets `propagate = False`, and attaches a handler. The propagate flag is the
+    dangerous one — pytest's caplog installs its handler on the ROOT logger, so
+    propagate False makes `caplog.text` come back EMPTY even under
+    `caplog.at_level(..., logger="pm2_mcp")`. Measured on pytest 9.1.1.
+
+    Without this fixture a single test calling _configure_logging() would silently
+    hollow out every caplog-based test that happened to run after it — they would still
+    pass their `assert x not in caplog.text` lines, because nothing is ever in
+    caplog.text. That is the same failure shape as vikunja#772 itself: an assertion that
+    holds for the wrong reason.
+    """
+    original_level = server._log.level
+    original_propagate = server._log.propagate
+    original_handlers = list(server._log.handlers)
+    try:
+        yield
+    finally:
+        server._log.setLevel(original_level)
+        server._log.propagate = original_propagate
+        server._log.handlers[:] = original_handlers
+
+
+class TestConfigureLogging:
+    """vikunja#772 — the shadow log never reached disk in production.
+
+    Every pre-existing test_shadow_log_* test runs under `caplog.at_level(...)`, which
+    FORCES a level the production path never had. They pin the message format correctly
+    and are still right; they simply cannot observe that the logger is silent by
+    default. These tests exercise the unforced path, which is the one that shipped.
+    """
+
+    def test_shadow_log_is_emitted_without_a_test_forced_level(
+        self, monkeypatch, restored_logger_state
+    ):
+        """The regression test for #772. Proven red before the fix.
+
+        Deliberately does NOT use caplog and does NOT touch any level. It attaches its
+        own handler and asserts a real emission, so the only thing that can make it pass
+        is _configure_logging() having set the logger's level. On the unfixed code the
+        record is dropped at the logger's level check before any handler is consulted —
+        verified: getEffectiveLevel() 30, isEnabledFor(INFO) False, nothing captured.
+        """
+        server._configure_logging()
+
+        stream = io.StringIO()
+        handler = logging.StreamHandler(stream)
+        server._log.addHandler(handler)
+        monkeypatch.setattr(server, "_ENV_MODE", "shadow")
+        monkeypatch.setenv("PM2_MCP_UNFORCED_CANARY", "value-must-not-appear")
+
+        server._clean_env("jlist")
+
+        output = stream.getvalue()
+        assert "env-allowlist shadow" in output
+        assert "PM2_MCP_UNFORCED_CANARY" in output
+        # The names-only property has to hold on this path too, not just the caplog one.
+        assert "value-must-not-appear" not in output
+
+    def test_configure_logging_enables_info_on_the_logger_itself(self, restored_logger_state):
+        """Level and handler are both required; assert the level half directly.
+
+        Setting a handler without the level drops the record at the logger. Setting the
+        level without a handler falls through to logging.lastResort, which is WARNING
+        and drops it too. This pins the half that #772 actually got wrong.
+        """
+        assert server._log.getEffectiveLevel() == logging.WARNING
+
+        server._configure_logging()
+
+        assert server._log.level == logging.INFO
+        assert server._log.isEnabledFor(logging.INFO)
+
+    def test_configure_logging_attaches_a_handler_and_stops_propagating(
+        self, restored_logger_state
+    ):
+        """propagate=False is what makes the handler immune to uvicorn's dictConfig."""
+        server._configure_logging()
+
+        assert server._log.propagate is False
+        assert any(getattr(h, server._LOG_HANDLER_TAG, False) for h in server._log.handlers)
+
+    def test_configure_logging_is_idempotent(self, restored_logger_state):
+        """PM2 restarts re-run the process, but a double call must not double every line.
+
+        Guarded on an ownership tag rather than isinstance(StreamHandler), because
+        pytest's LogCaptureHandler is itself a StreamHandler subclass — an isinstance
+        check would mistake a test's handler for ours and skip attaching the real one,
+        which is a silent re-introduction of #772 under test.
+        """
+        server._configure_logging()
+        after_first = len(server._log.handlers)
+
+        server._configure_logging()
+
+        assert len(server._log.handlers) == after_first
+        owned = [h for h in server._log.handlers if getattr(h, server._LOG_HANDLER_TAG, False)]
+        assert len(owned) == 1
+
+    def test_handler_survives_a_uvicorn_shaped_dictconfig(self, restored_logger_state):
+        """The specific interaction that made this design non-obvious.
+
+        FastMCP hands log_level to uvicorn, which applies logging.config.dictConfig, and
+        dictConfig calls _clearExistingHandlers() — closing and de-registering every
+        handler attached before it runs, which is exactly the ordering __main__
+        produces. Handler.close() de-registers but does not detach the handler or drop
+        its stream, so a handler attached directly to this logger survives. Asserting it
+        here means a future Python that changes that behaviour fails the build loudly
+        rather than silently re-opening #772.
+        """
+        import logging.config
+
+        server._configure_logging()
+        stream = io.StringIO()
+        handler = logging.StreamHandler(stream)
+        server._log.addHandler(handler)
+
+        logging.config.dictConfig(
+            {
+                "version": 1,
+                "disable_existing_loggers": False,
+                "formatters": {"default": {"format": "%(message)s"}},
+                "handlers": {"default": {"class": "logging.StreamHandler", "formatter": "default"}},
+                "loggers": {"uvicorn": {"handlers": ["default"], "level": "INFO"}},
+            }
+        )
+
+        server._log.info("after dictConfig")
+
+        assert server._log.level == logging.INFO
+        assert "after dictConfig" in stream.getvalue()
+
+
+class TestResolveBind:
+    """vikunja#770 — --host/--port were passed by ecosystem.config.js but never read."""
+
+    def test_argv_beats_env(self):
+        host, port = _resolve_bind_with(
+            ["--host", "127.0.0.2", "--port", "9999"],
+            {"MCP_HOST": "127.0.0.3", "MCP_PORT": "8888"},
+        )
+        assert (host, port) == ("127.0.0.2", 9999)
+
+    def test_env_beats_the_default(self):
+        host, port = _resolve_bind_with([], {"MCP_HOST": "127.0.0.4", "MCP_PORT": "7777"})
+        assert (host, port) == ("127.0.0.4", 7777)
+
+    def test_default_applies_when_neither_is_set(self):
+        host, port = _resolve_bind_with([], {})
+        assert (host, port) == ("127.0.0.1", 8486)
+
+    def test_argv_host_alone_leaves_port_on_env(self):
+        """Precedence is per-field, not all-or-nothing — the mixed case is the real one.
+
+        ecosystem.config.js can legitimately pass only --host while MCP_PORT comes from
+        the environment, and a resolver that fell back to the default port the moment
+        any argv appeared would silently move the listener.
+        """
+        host, port = _resolve_bind_with(["--host", "127.0.0.5"], {"MCP_PORT": "6666"})
+        assert (host, port) == ("127.0.0.5", 6666)
+
+    def test_explicit_port_zero_is_not_swapped_for_the_default(self):
+        """`args.port or default` would silently turn --port 0 into 8486."""
+        _host, port = _resolve_bind_with(["--port", "0"], {})
+        assert port == 0
+
+    @pytest.mark.parametrize("host", ["127.0.0.1", "127.0.0.2", "localhost", "::1"])
+    def test_loopback_forms_are_accepted(self, host):
+        resolved, _ = _resolve_bind_with(["--host", host], {})
+        assert resolved == host
+
+
+class TestResolveBindRefusesNonLoopback:
+    """NEGATIVE tests on a security boundary — Baseline requires these be explicit.
+
+    pm2-mcp has no authentication on its port and its write verbs can stop or restart
+    any PM2 process on the host, including every agent's own broker. A --host that
+    accepted 0.0.0.0 would convert a documented-safe posture into a one-word footgun.
+    """
+
+    @pytest.mark.parametrize(
+        "host",
+        [
+            "0.0.0.0",
+            "::",
+            "192.168.1.12",
+            "10.0.0.1",
+            "8.8.8.8",
+            "example.com",
+            "forge.helmforge.me",
+            "",
+        ],
+    )
+    def test_non_loopback_host_is_refused(self, host, capsys):
+        with pytest.raises(SystemExit) as excinfo:
+            _resolve_bind_with(["--host", host], {})
+
+        assert excinfo.value.code != 0
+        assert "refusing to bind" in capsys.readouterr().err
+
+    def test_a_non_loopback_env_host_is_refused_too(self, capsys):
+        """The guard belongs to the resolved value, not to the flag.
+
+        MCP_HOST reaches the same bind, so a check that only validated argv would leave
+        the exact hole it was added to close — and the env path is the one that has
+        been live for months.
+        """
+        with pytest.raises(SystemExit):
+            _resolve_bind_with([], {"MCP_HOST": "0.0.0.0"})
+
+        assert "refusing to bind" in capsys.readouterr().err
+
+    def test_an_explicitly_empty_host_is_refused_not_defaulted(self, capsys):
+        """`--host ""` is INADDR_ANY at the socket layer, i.e. the wildcard bind.
+
+        The obvious `args.host or env or default` chain swallows this by falsiness and
+        quietly resolves it to 127.0.0.1. Safe by accident, but it means the guard never
+        fires on the one spelling of a wildcard bind that does not look like one. An
+        explicitly-passed flag is honoured or refused, never silently replaced.
+
+        An empty ENV var is deliberately different — see _resolve_bind. That has been
+        treated as unset since v0.1 and resolves to loopback.
+        """
+        with pytest.raises(SystemExit):
+            _resolve_bind_with(["--host", ""], {})
+
+        assert "refusing to bind" in capsys.readouterr().err
+
+    def test_an_empty_env_host_still_falls_back_to_the_default(self):
+        """The documented asymmetry, pinned so it is a decision and not a regression."""
+        host, _ = _resolve_bind_with([], {"MCP_HOST": ""})
+        assert host == "127.0.0.1"
+
+    def test_a_hostname_is_refused_rather_than_resolved(self, capsys):
+        """Resolution is not a security boundary.
+
+        A name can point anywhere, and can be repointed after the check passes without
+        this process restarting. Refusing outright is the only version of this check
+        that stays true.
+        """
+        with pytest.raises(SystemExit):
+            _resolve_bind_with(["--host", "some-internal-host"], {})
+
+        assert "refusing to bind" in capsys.readouterr().err
+
+
+def _resolve_bind_with(argv, env):
+    """Call _resolve_bind with an explicit env, never the real os.environ.
+
+    Passing env in rather than monkeypatching means these tests cannot be affected by,
+    or leak into, the MCP_HOST/MCP_PORT the surrounding process happens to carry.
+    """
+    return server._resolve_bind(argv, env)
