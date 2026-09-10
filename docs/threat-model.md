@@ -37,15 +37,21 @@ is using, and including `pm2-mcp` itself.
 
 What limits it:
 
-- The server binds `127.0.0.1` by default, so it is not reachable off-host without someone
-  deliberately proxying it or changing `MCP_HOST`.
+- **The loopback bind is enforced in code, not merely defaulted** (vikunja#770, v0.4.0). The
+  resolved host — from `--host`, `MCP_HOST`, or the default — must be `127.0.0.0/8`, `::1`
+  or `localhost`. Anything else, including `0.0.0.0` and any hostname, exits non-zero
+  instead of starting. There is deliberately no override flag.
 - Anything already running locally as this user could invoke `pm2` directly anyway, so
   against a *local* attacker the server grants no authority they did not already have.
 
 That second point is the actual justification, and it has a limit worth naming: it holds for
 code running **as this user**. It does not hold for a lower-privileged local process, or for
-a container that can reach the host loopback, and it stops holding entirely the moment
-`MCP_HOST` is changed or a reverse proxy is put in front.
+a container that can reach the host loopback.
+
+Before v0.4.0 the first point read "binds `127.0.0.1` by default … without someone
+deliberately proxying it or changing `MCP_HOST`", and that was the weaker claim: a one-word
+edit to a config file was enough to expose it. Changing `MCP_HOST` is no longer a way out of
+this boundary. Putting a reverse proxy in front still is — see below.
 
 **Do not put this behind a public reverse proxy.** If it ever needs to be reachable
 off-host, it needs real authentication first — not a proxy ACL.

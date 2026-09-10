@@ -3,7 +3,7 @@ module.exports = {
     {
       name: "pm2-mcp",
       script: "/home/ted/repos/personal/pm2-mcp/.venv/bin/python3",
-      args: ["server.py"],
+      args: ["server.py", "--host", "127.0.0.1", "--port", "8486"],
       cwd: "/home/ted/repos/personal/pm2-mcp",
       interpreter: "none",
 
@@ -12,15 +12,41 @@ module.exports = {
       // Neither is set in the running process today, so the bind address comes
       // from the defaults in server.py's __main__ block: 127.0.0.1:8486.
       //
-      // `args` carried "--host 127.0.0.1 --port 8486" until 2026-09-09, and the
-      // comment here claimed they were "supplied explicitly ... which take
-      // precedence". That was false: server.py has no argparse and never reads
-      // sys.argv, so both flags were inert and the process bound 8486 only
-      // because that is the hardcoded default. The two agreed by coincidence,
-      // which is why nobody noticed — editing --port here would have changed
-      // nothing at all. The dead flags are removed rather than left as
-      // documentation of an intent the code does not implement. To pin the bind
-      // explicitly, set MCP_HOST/MCP_PORT in this block; see vikunja#770.
+      // THE FLAGS IN `args` ABOVE ARE LIVE AS OF vikunja#770 (2026-09-10).
+      // Say that plainly, because for months they were NOT and the comment here
+      // claimed otherwise. History, so the next reader does not re-derive it:
+      //
+      //   - Until 2026-09-09 `args` carried these same two flags while server.py
+      //     had no argparse and never read sys.argv. Both were inert. The process
+      //     bound 8486 only because that was the hardcoded default, and the two
+      //     agreed by coincidence — editing --port here would have changed nothing.
+      //   - On 2026-09-09 the dead flags were removed rather than left as
+      //     documentation of an intent the code did not implement.
+      //   - #770 added the argparse that makes them real, so they are restored.
+      //
+      // Precedence is argv > MCP_HOST/MCP_PORT > server.py's 127.0.0.1:8486
+      // default, so these flags now win over anything set in `env` below.
+      //
+      // The bind is LOOPBACK-ONLY and enforced in code: a non-loopback --host
+      // exits non-zero instead of starting. This server has no authentication and
+      // its write verbs can stop or restart any PM2 process on the host, so that
+      // refusal is deliberate and there is no override flag. See
+      // docs/threat-model.md §1.
+      //
+      // CHANGING ANYTHING IN THIS FILE NEEDS MORE THAN `pm2 restart`. Measured
+      // 2026-09-10: this file was edited 2026-09-09 21:17 and the process was
+      // restarted 2026-09-10 05:53, yet the live process still carried the args
+      // the file no longer declared. `pm2 restart` re-execs the script from disk
+      // (so CODE changes do land) but re-reads its config from PM2's own dump,
+      // not from here. Applying a change to this file needs `pm2 delete` +
+      // `pm2 start ecosystem.config.js` — which re-captures the calling shell's
+      // entire environment (the vikunja#767 mechanism) and, since #772 made the
+      // shadow log actually reach disk, would now also write the NAMES of every
+      // withheld variable in that shell to /home/ted/logs/pm2-mcp.log. Measured:
+      // started from an agent shell that is 84 names including 12 secret-shaped
+      // ones; started by PM2 at boot it is 64 names and zero secret-shaped. So
+      // do that from a clean, minimal shell or at boot — never from an
+      // interactive agent session.
       //
       // Stated explicitly rather than omitted so that "no env block" can no
       // longer be read two ways. A declaration silent about env is

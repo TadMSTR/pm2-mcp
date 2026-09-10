@@ -3,10 +3,13 @@ pm2-mcp — FastMCP server wrapping the PM2 CLI.
 Transport: streamable-http on 127.0.0.1:8486/mcp
 """
 
+import argparse
+import ipaddress
 import json
 import logging
 import os
 import subprocess
+import sys
 import time
 
 from fastmcp import FastMCP
@@ -126,6 +129,147 @@ _ENV_MODE = os.environ.get("PM2_MCP_ENV_MODE", "shadow").strip().lower()
 
 _log = logging.getLogger("pm2_mcp")
 
+# Marks the handler this module owns, so _configure_logging() is idempotent without
+# reaching for isinstance(): pytest's LogCaptureHandler is itself a StreamHandler
+# subclass, so an isinstance check would mistake a test's handler for ours and skip
+# attaching the real one.
+_LOG_HANDLER_TAG = "_pm2_mcp_owned_handler"
+
+# Bind defaults. Kept as named constants rather than inline literals because
+# _resolve_bind's precedence test asserts the default arm specifically, and a test that
+# imports the same literal it is checking asserts nothing.
+_DEFAULT_HOST = "127.0.0.1"
+_DEFAULT_PORT = 8486
+
+
+def _configure_logging() -> None:
+    """Make the `pm2_mcp` logger actually emit on the production startup path.
+
+    Both halves below are required and neither is sufficient alone. Setting the level
+    with no handler anywhere falls through to `logging.lastResort`, which is itself
+    WARNING and drops the INFO record regardless; attaching a handler without setting
+    the level loses the record at the logger's own level check, before any handler is
+    consulted. vikunja#772 was the second failure: effective level 30, handlers [], and
+    so every shadow-mode run since the allowlist merged produced no evidence at all.
+
+    Attaching the handler DIRECTLY to `pm2_mcp` with `propagate = False` is deliberate.
+    FastMCP hands `log_level` to uvicorn, which applies `logging.config.dictConfig`, and
+    dictConfig calls `_clearExistingHandlers()` — which closes and de-registers every
+    handler attached before it runs, exactly the ordering this function produces by
+    being called before `mcp.run(...)`. Measured on the Python 3.13 this repo runs: a
+    handler attached directly to this logger survives that intact — still attached,
+    still level 20, still emitting — because `Handler.close()` de-registers but neither
+    detaches the handler nor drops its stream. uvicorn's default LOGGING_CONFIG also
+    declares only the `uvicorn*` loggers, carries `disable_existing_loggers: False`, and
+    has no `root` key at all, so nothing it does reaches this logger.
+
+    NOT called at import time, deliberately. `server.py` is imported by the test suite
+    and by anything installing the wheel, and configuring global logging as an import
+    side effect is the kind of thing that surprises a consumer. It belongs on the
+    startup path only, which is why it is a function and not module-level code.
+
+    TESTING NOTE, learned the hard way: `propagate = False` cuts pytest's `caplog` off
+    completely, because caplog installs its handler on the ROOT logger. Measured on
+    pytest 9.1.1 — with propagate False, `caplog.text` is empty even under
+    `caplog.at_level(..., logger="pm2_mcp")`. Any test that calls this function MUST
+    snapshot and restore the logger's level, propagate flag and handler list, or it
+    silently breaks every caplog-based test that happens to run after it. See the
+    `restored_logger_state` fixture in the test suite.
+    """
+    _log.setLevel(logging.INFO)
+    _log.propagate = False
+    if not any(getattr(h, _LOG_HANDLER_TAG, False) for h in _log.handlers):
+        handler = logging.StreamHandler()
+        handler.setFormatter(logging.Formatter("%(levelname)s:%(name)s: %(message)s"))
+        setattr(handler, _LOG_HANDLER_TAG, True)
+        _log.addHandler(handler)
+
+
+def _is_loopback(host: str) -> bool:
+    """True only for an address that cannot be reached from off-box.
+
+    A bare hostname other than `localhost` is refused rather than resolved. Resolution
+    is not a security boundary — the name can point anywhere, and can change to point
+    somewhere else after this check passes without the process restarting.
+    """
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def _resolve_bind(argv: list | None = None, env: dict | None = None) -> tuple:
+    """Resolve the (host, port) to bind, precedence argv > env > default.
+
+    vikunja#770: `ecosystem.config.js` passed `--host`/`--port` for months while
+    `__main__` read only MCP_HOST/MCP_PORT, so the flags were silently inert. This makes
+    them live.
+
+    The loopback refusal is the security-relevant half. This server has NO
+    authentication on its port and its write verbs can stop or restart any PM2 process
+    on the host, including every agent's own broker — see `docs/threat-model.md` §1.
+    `--host 0.0.0.0` would turn a documented-safe posture into a one-word footgun, so a
+    non-loopback bind exits non-zero instead of starting.
+
+    There is deliberately NO override flag. Nothing on forge needs one, and shipping the
+    escape hatch alongside the flag that makes it necessary defeats the point of the
+    check. If a real need appears, that is its own reviewable change with its own audit.
+    """
+    env = os.environ if env is None else env
+    parser = argparse.ArgumentParser(
+        prog="pm2-mcp",
+        description="FastMCP server wrapping the PM2 CLI. Loopback binds only.",
+    )
+    parser.add_argument(
+        "--host",
+        default=None,
+        help=f"Bind address; must be loopback. Overrides MCP_HOST. Default {_DEFAULT_HOST}.",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=None,
+        help=f"Bind port. Overrides MCP_PORT. Default {_DEFAULT_PORT}.",
+    )
+    args = parser.parse_args(argv)
+
+    # `is not None` throughout rather than `or`, so an explicitly-passed flag is
+    # honoured or refused but never silently replaced by falsiness. Two cases make this
+    # load-bearing rather than pedantic:
+    #   --host ""  -> an empty host is INADDR_ANY at the socket layer, i.e. the exact
+    #                 wildcard bind the loopback guard exists to refuse. Falling through
+    #                 to the default would swallow it instead of rejecting it.
+    #   --port 0   -> a legitimate "pick a free port" request, which `or` would turn
+    #                 into 8486.
+    # An EMPTY env var is different and is treated as unset: that is the behaviour
+    # MCP_HOST/MCP_PORT have had since v0.1, it is safe (it resolves to loopback), and
+    # changing it would break deployments that export the vars empty.
+    host = args.host if args.host is not None else env.get("MCP_HOST") or _DEFAULT_HOST
+    port = args.port if args.port is not None else int(env.get("MCP_PORT") or _DEFAULT_PORT)
+
+    # SECURITY[control]: a port outside the TCP range cannot widen the bind — the loopback
+    # guard below runs on `host` independently of whatever `port` is — so this is a
+    # legibility fix, not a boundary. Without it the failure is an OSError traceback out of
+    # socket.bind() well after startup begins; with it, an invalid port refuses in the same
+    # shape and at the same point as an invalid host. Audit: 2026-09-10 /
+    # pm2-mcp-followups-2026-09 (INFO-1). 0 is deliberately IN range: it is a valid request
+    # for an ephemeral port, and is pinned by its own test.
+    if not 0 <= port <= 65535:
+        parser.error(
+            f"refusing to bind port {port}: outside the valid TCP range 0-65535. "
+            f"Port 0 is permitted and asks the kernel for an ephemeral port."
+        )
+
+    if not _is_loopback(host):
+        parser.error(
+            f"refusing to bind {host!r}: pm2-mcp has no authentication and its write "
+            f"verbs can stop any PM2 process on the host, so it binds loopback only "
+            f"(127.0.0.0/8, ::1 or localhost). See docs/threat-model.md. vikunja#770."
+        )
+    return host, port
+
 
 # ---------------------------------------------------------------------------
 # Internal helpers
@@ -173,8 +317,18 @@ def _clean_env(*command: str) -> dict:
     withheld = sorted(set(current) - set(allowed))
     if withheld:
         # SECURITY[accepted]: this line writes environment variable NAMES (never values) to
-        # /home/ted/logs/pm2-mcp.log, mode 644, on every pm2 invocation. Ted's ruling
-        # 2026-09-09. Rationale: the log sits in the service account's own home directory,
+        # /home/ted/logs/pm2-mcp.log, mode 644, on each pm2 invocation. Ted's ruling
+        # 2026-09-09, RE-CONFIRMED 2026-09-10 on a corrected premise: when first accepted
+        # this line had never once reached disk, because _configure_logging() did not exist
+        # and the logger had no level or handler (vikunja#772). The risk was accepted for a
+        # disclosure that was not happening; v0.4.0 is what makes it real. Low survives, as
+        # the reasoning below was never contingent on frequency.
+        # Measured 2026-09-10, and it is the START METHOD that governs exposure, not this
+        # code: started by PM2 at boot this names 64 variables, zero secret-shaped; started
+        # from an interactive shell, 84 of which 12 are secret-shaped. See
+        # docs/operations.md — this is the second independent reason for the vikunja#767
+        # rule against starting the service from a session shell.
+        # Rationale: the log sits in the service account's own home directory,
         # so a reader is already that account or root — and this server has no
         # authentication on 127.0.0.1:8486 at all, meaning such a reader can already stop
         # every PM2 process on the host. Names in a log they own is not the interesting
@@ -470,6 +624,10 @@ def get_status() -> dict:
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    host = os.environ.get("MCP_HOST") or "127.0.0.1"
-    port = int(os.environ.get("MCP_PORT") or "8486")
-    mcp.run(transport="streamable-http", host=host, port=port)
+    # Deliberately thin: everything here is coverage-excluded and unreachable from a
+    # test, so both the logging setup and the bind resolution live in module-level
+    # functions above that the suite can actually exercise. vikunja#772 is what happens
+    # when startup-only logic has no test that can reach it.
+    _configure_logging()
+    _host, _port = _resolve_bind(sys.argv[1:])
+    mcp.run(transport="streamable-http", host=_host, port=_port)

@@ -19,7 +19,7 @@
 set -euo pipefail
 
 MUTMUT="${MUTMUT:-mutmut}"
-FUNCS="clean_env|allowlist_env|denylist_env|run_pm2"
+FUNCS="clean_env|allowlist_env|denylist_env|run_pm2|is_loopback"
 RESULTS="mutmut-results.txt"
 
 # Fail loudly rather than letting `|| true` below turn a missing binary into a pass.
@@ -77,9 +77,29 @@ fi
 #
 # A DROP means mutable surface was removed. Re-measure and update these deliberately,
 # with the date, exactly as with the coverage floor — do not just lower them to go green.
-declare -A MIN_MUTANTS=( [clean_env]=25 [allowlist_env]=1 [denylist_env]=4 [run_pm2]=22 )
+# MEASURED 2026-09-10 (vikunja#770): _is_loopback 6, zero survivors. Added to FUNCS
+# because it IS the new trust boundary — it is the predicate that decides whether this
+# unauthenticated server, whose write verbs can stop any PM2 process on the host, is
+# reachable from off-box. A gate that covered the environment boundary but not the
+# network one would be guarding the smaller of the two.
+#
+# _resolve_bind is deliberately NOT in FUNCS, and this is a decision rather than an
+# oversight. It generates 46 mutants of which 15 survive, and ALL 15 are cosmetic:
+# argparse `prog=`, `description=` and `help=` strings, plus two `default=None`
+# deletions that are genuinely equivalent (argparse's own default default is None).
+# Every behavioural mutant in it is killed — verified individually by diff on
+# 2026-09-10, not inferred from the total:
+#     `if not _is_loopback(host)` -> `if _is_loopback(host)`   killed
+#     `_is_loopback(host)`        -> `_is_loopback(None)`      killed
+#     every argv/env/default precedence mutant on host and port  killed
+#     the refusal message itself                                 killed
+# Gating it would therefore fail on help text, and the only way to go green would be
+# asserting argparse's --help output — noise that would teach the next person the gate
+# is something to work around. If _resolve_bind ever grows behaviour that is not
+# delegated to _is_loopback, revisit this and re-measure.
+declare -A MIN_MUTANTS=( [clean_env]=25 [allowlist_env]=1 [denylist_env]=4 [run_pm2]=22 [is_loopback]=6 )
 
-for fn in clean_env allowlist_env denylist_env run_pm2; do
+for fn in clean_env allowlist_env denylist_env run_pm2 is_loopback; do
   n=$("$MUTMUT" results --all true | grep -cE "x__${fn}__mutmut_[0-9]+" || true)
   floor=${MIN_MUTANTS[$fn]}
   if [ "$n" -eq 0 ]; then
@@ -109,5 +129,5 @@ fi
 
 echo ""
 echo "PASS: zero surviving mutants across ${evaluated} mutants in the trust-boundary set"
-echo "      (_clean_env, _allowlist_env, _denylist_env, _run_pm2)."
+echo "      (_clean_env, _allowlist_env, _denylist_env, _run_pm2, _is_loopback)."
 echo "      (_parse_summary survivors are expected and deliberately not gated.)"
