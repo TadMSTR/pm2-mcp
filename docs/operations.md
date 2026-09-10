@@ -37,10 +37,22 @@ logger, so shadow mode now actually writes to disk — which means the *names* o
 withheld variable in the starting shell's environment land in `/home/ted/logs/pm2-mcp.log`.
 Measured 2026-09-10, same code, two different parents:
 
-| Started by | Names withheld | Of which secret-shaped |
+| Started by | Names in the shadow line | Of which secret-shaped |
 |---|---|---|
-| PM2 at boot | 64 | **0** |
+| PM2 at boot | 62 | **0** |
 | An interactive agent shell | 84 | **12** (`TASK_QUEUE_TOKEN_*`, `LANGFUSE_SECRET_KEY`, …) |
+
+Both rows are counts from the real log line, taken after the v0.4.0 redeploy.
+
+> **62, not 64.** You will see 64 if you compute `present − allowlisted` yourself against
+> `/proc/<pid>/environ` (71 − 7 on this host). The log reports the smaller number because it
+> lists only what enforcement would withhold *additionally* — the shipped denylist has already
+> removed `NODE_CHANNEL_FD` and `NODE_CHANNEL_SERIALIZATION_MODE` (vikunja#80, fixed in
+> v0.3.1). Both figures are correct; 62 is the one to reason from, because the enforce
+> decision is about the delta from current behaviour.
+>
+> Neither is a constant. The count describes the *parent* environment, so it moves when the
+> parent does — which is exactly why the log records variable **names** rather than a count.
 
 Values are never logged and there are canary tests pinning that. But variable *names* are
 still a disclosure, and the difference between those two rows is entirely who ran the start

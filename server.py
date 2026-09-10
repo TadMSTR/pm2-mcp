@@ -323,9 +323,19 @@ def _clean_env(*command: str) -> dict:
         # and the logger had no level or handler (vikunja#772). The risk was accepted for a
         # disclosure that was not happening; v0.4.0 is what makes it real. Low survives, as
         # the reasoning below was never contingent on frequency.
-        # Measured 2026-09-10, and it is the START METHOD that governs exposure, not this
-        # code: started by PM2 at boot this names 64 variables, zero secret-shaped; started
-        # from an interactive shell, 84 of which 12 are secret-shaped. See
+        # Measured 2026-09-10 from the LIVE log after redeploy, and it is the START METHOD
+        # that governs exposure, not this code: started by PM2 at boot this line names 62
+        # variables, zero secret-shaped; started from an interactive shell, 84 of which 12
+        # are secret-shaped.
+        # 62, not 64. Both numbers are right and measure different things — 64 is
+        # present-minus-allowlisted (71 - 7), while this line reports only what enforcement
+        # would withhold ADDITIONALLY, i.e. after the shipped denylist has already removed
+        # NODE_CHANNEL_FD and NODE_CHANNEL_SERIALIZATION_MODE (vikunja#80, fixed v0.3.1).
+        # 62 is the operationally meaningful figure because the enforce decision is about the
+        # delta from current behaviour. Do not "correct" it back to 64.
+        # And note the count is not a constant: it describes the PARENT environment, which is
+        # the same argument this comment makes below for logging names rather than a count.
+        # See
         # docs/operations.md — this is the second independent reason for the vikunja#767
         # rule against starting the service from a session shell.
         # Rationale: the log sits in the service account's own home directory,
