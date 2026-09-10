@@ -85,6 +85,37 @@ issue (vikunja#768) and not a failure of this service.
 
 Note this prints key *names* only. Don't reach for a variant that prints values.
 
+## The environment allowlist (shadow mode)
+
+`_clean_env` computes a named allowlist for the environment handed to the `pm2` CLI. It
+currently runs in **shadow mode**: behaviour is unchanged and it only reports what
+enforcement would remove.
+
+```bash
+pm2 logs pm2-mcp --nostream --lines 200 | grep 'env-allowlist shadow'
+```
+
+Each line names the pm2 command and the variables that would be withheld:
+
+```
+env-allowlist shadow: pm2 restart svc-a would lose DBUS_SESSION_BUS_ADDRESS,MOTD_SHOWN,...
+```
+
+Names only — never values, and never a bare count. A count would describe the parent
+environment rather than the command, so it would be identical on every call and would predict
+nothing about which callers break.
+
+**Before enforcing, read these lines and check nothing the `pm2` CLI needs is on them.**
+Measured on this host, 13 variables would be withheld and none is required: `pm2 jlist`,
+`pm2 --version` and `pm2 logs` were each verified working with only the seven allowlisted
+variables present. `PM2_JSON_PROCESSING` and `PM2_USAGE` appear in the withheld list and are
+the two worth watching, since pm2 sets them itself.
+
+To enforce, change the `_ENV_MODE` default in `server.py` and redeploy. It is deliberately
+**not** wired through `ecosystem.config.js`'s `env` block — that block is empty on purpose,
+and flipping a security posture should be a reviewable code diff rather than an environment
+variable on a service whose whole declaration says it needs none.
+
 ## Recovery
 
 | Symptom | What to do |

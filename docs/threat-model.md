@@ -75,13 +75,26 @@ interactive session shell and sat in a mode-664 `dump.pm2` for nine days (vikunj
 Prefix rather than a list is deliberate: an enumerated list of "known" `CLAUDE_*` names has
 already gone stale once here, and new releases add names without touching this repo.
 
-**Residual risk.** `_clean_env` is a denylist. Any *other* secret in the parent environment —
-`GITHUB_TOKEN`, `ANTHROPIC_API_KEY`, anything an operator's shell happened to source — still
-passes through. The structural fix is to invert it to an allowlist, which is tracked
-separately (vikunja#610). Until then the real protection is operational: the shipped
-`ecosystem.config.js` declares `env: {}`, and the server is started by PM2 at boot rather
-than from an interactive shell. A `pm2 start` run by hand from a session that has sourced a
-secrets file re-contaminates it, and nothing in the code prevents that.
+**Residual risk, and the allowlist that addresses it.** A denylist can only refuse what it
+has been told to name. Any *other* secret in the parent environment — `GITHUB_TOKEN`,
+`ANTHROPIC_API_KEY`, anything an operator's shell happened to source — passes straight
+through.
+
+An allowlist (vikunja#610) is implemented and currently runs in **shadow mode**: it computes
+what it would keep, logs the names it would withhold for each pm2 command, and changes
+nothing. Set `PM2_MCP_ENV_MODE=enforce` to apply it.
+
+Measured on the live process before enforcing: 20 environment variables, of which 13 would be
+withheld and **none** is secret-shaped. So enforcement is not removing credentials that are
+leaking today — it removes the possibility of tomorrow's. The evidence that this matters is
+in the withheld list itself, which contains `SSH_CLIENT`, `SSH_CONNECTION` and
+`XDG_SESSION_*`: this process was started from an interactive session, which is precisely the
+path that produced #767.
+
+Until enforcement is on, the protection is operational rather than structural: the shipped
+`ecosystem.config.js` declares `env: {}`, and the service is meant to start from PM2 at boot.
+A `pm2 start` run by hand from a session that has sourced a secrets file re-contaminates it,
+and nothing in the code prevents that.
 
 ## 3. Service-name handling
 

@@ -19,7 +19,7 @@
 set -euo pipefail
 
 MUTMUT="${MUTMUT:-mutmut}"
-FUNCS="clean_env|run_pm2"
+FUNCS="clean_env|allowlist_env|denylist_env|run_pm2"
 RESULTS="mutmut-results.txt"
 
 # Fail loudly rather than letting `|| true` below turn a missing binary into a pass.
@@ -52,8 +52,14 @@ if [ "$evaluated" -eq 0 ]; then
   exit 1
 fi
 
-# Per-function mutant-count floors. MEASURED 2026-09-09 against server.py at the state
-# these gates were written for: _clean_env 4, _run_pm2 22.
+# Per-function mutant-count floors. MEASURED 2026-09-09: _clean_env 25, _allowlist_env 1,
+# _denylist_env 4, _run_pm2 22.
+#
+# _clean_env was 4 before the allowlist inversion (vikunja#610) and is 25 after — the
+# rewrite added real mutable surface rather than moving it elsewhere. _allowlist_env and
+# _denylist_env are new and were added to FUNCS deliberately: the allowlist itself is the
+# trust decision now, and leaving it outside the filter would have quietly narrowed this
+# gate at the exact moment its subject moved.
 #
 # These are not decoration, and the reason is worth reading before changing them. A
 # zero-survivor check can only fail if a mutant EXISTS to survive, and mutmut mutates
@@ -71,9 +77,9 @@ fi
 #
 # A DROP means mutable surface was removed. Re-measure and update these deliberately,
 # with the date, exactly as with the coverage floor — do not just lower them to go green.
-declare -A MIN_MUTANTS=( [clean_env]=4 [run_pm2]=22 )
+declare -A MIN_MUTANTS=( [clean_env]=25 [allowlist_env]=1 [denylist_env]=4 [run_pm2]=22 )
 
-for fn in clean_env run_pm2; do
+for fn in clean_env allowlist_env denylist_env run_pm2; do
   n=$("$MUTMUT" results --all true | grep -cE "x__${fn}__mutmut_[0-9]+" || true)
   floor=${MIN_MUTANTS[$fn]}
   if [ "$n" -eq 0 ]; then
@@ -102,5 +108,6 @@ if grep -E "^[[:space:]]*server\.x__(${FUNCS})__mutmut_[0-9]+: survived" "$RESUL
 fi
 
 echo ""
-echo "PASS: zero surviving mutants across ${evaluated} mutants in _clean_env and _run_pm2."
+echo "PASS: zero surviving mutants across ${evaluated} mutants in the trust-boundary set"
+echo "      (_clean_env, _allowlist_env, _denylist_env, _run_pm2)."
 echo "      (_parse_summary survivors are expected and deliberately not gated.)"

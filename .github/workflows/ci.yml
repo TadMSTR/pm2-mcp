@@ -3,8 +3,12 @@ name: CI
 on:
   push:
     branches: [main]
+  # No `branches:` filter. With `branches: [main]` a pull request opened against any base
+  # other than main ran NO jobs at all — and a PR with zero checks does not look failed, it
+  # looks like CI has not started yet. Found when this very branch was opened against
+  # another feature branch and sat with no checks. Stacked PRs are exactly where the risk
+  # is highest, since the second change is reviewed against a base that is not yet merged.
   pull_request:
-    branches: [main]
 
 jobs:
   lint:

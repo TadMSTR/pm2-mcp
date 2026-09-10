@@ -56,6 +56,17 @@ assert _leaked_keys(env, ("CLAUDE_CODE_OAUTH_TOKEN",)) == []
 These tests run on machines whose ambient environment holds real credentials. A failing
 assertion should not print them.
 
+**Never replace `os.environ` wholesale.** Not `monkeypatch.setattr(os, "environ", {...})`,
+not a `dict` swap of any kind. mutmut wraps every mutated function in a trampoline that reads
+`MUTANT_UNDER_TEST` from `os.environ` *on each call* to choose which variant to run. A test
+that swaps `os.environ` for a plain dict therefore runs the **original** function under every
+mutant, so it can never kill one — and mutmut drops it from the stats mapping entirely.
+
+The trap is that such a test looks completely healthy: it passes, it raises coverage, and it
+reads as thorough. Three tests here were written that way, and every surviving mutant in
+`_clean_env` was surviving for that reason alone. Shape the environment with
+`monkeypatch.setenv` / `delenv`, or patch `_allowlist_env` / `_denylist_env` directly.
+
 ## Style
 
 - `ruff` decides formatting; don't hand-format around it.
