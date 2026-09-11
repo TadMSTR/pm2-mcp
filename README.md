@@ -202,7 +202,9 @@ The server binds loopback only, and **that is enforced in code rather than defau
 
 The write tools (`restart_service`, `stop_service`, `start_service`, `reload_service`, `flush_logs`) validate service names against the live PM2 process list before acting. An unrecognized name returns `{ok: false, error: "service '...' not found"}` without touching PM2.
 
-Before invoking the `pm2` CLI the server scrubs its own environment — PM2's IPC variables, and anything matching the `CLAUDE` prefix. `pm2 start` and `pm2 restart --update-env` copy the caller's whole environment into the target app and `pm2 save` persists it, so this is the difference between a credential staying in memory and being written to disk.
+Before invoking the `pm2` CLI the server scrubs its own environment. Today that means a denylist: PM2's IPC variables, and anything matching the `CLAUDE` prefix. `pm2 start` and `pm2 restart --update-env` copy the caller's whole environment into the target app and `pm2 save` persists it, so this is the difference between a credential staying in memory and being written to disk.
+
+A named **allowlist** (vikunja#610) is also implemented and will replace that prefix-match denylist once enabled — but it is not live yet. It runs in **shadow mode** by default: it computes and logs which variables it would withhold, per `pm2` invocation, and changes nothing. Enforcing it is an opt-in source change (`PM2_MCP_ENV_MODE=enforce`), gated on vikunja#771. Which environment reaches the `pm2` child, and why, is the most consequential thing about running this server — see [docs/threat-model.md §2](docs/threat-model.md#2-the-environment-handed-to-the-pm2-cli) for the full reasoning rather than re-deriving it here.
 
 Full posture, including the gaps that are accepted rather than fixed: **[docs/threat-model.md](docs/threat-model.md)**.
 
