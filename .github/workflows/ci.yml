@@ -153,8 +153,15 @@ jobs:
           set -euo pipefail
           npm install --prefix "$RUNNER_TEMP/pm2" --no-audit --no-fund pm2@6.0.14
           echo "$RUNNER_TEMP/pm2/node_modules/.bin" >> "$GITHUB_PATH"
+      # From package.json, not `pm2 --version`: on a host with no daemon yet, that spawns
+      # one and prints its startup lines too, so the comparison fails (measured in CI,
+      # 2026-10-25).
       - name: pm2 is the pinned version
-        run: test "$(pm2 --version)" = "6.0.14"
+        run: |
+          v=$(node -p "require('$RUNNER_TEMP/pm2/node_modules/pm2/package.json').version")
+          echo "pm2 $v"
+          test "$v" = "6.0.14"
+          test "$(command -v pm2)" = "$RUNNER_TEMP/pm2/node_modules/.bin/pm2"
       - name: Integration tests
         run: uv run --frozen --no-sync pytest -m integration --no-cov -v
 
