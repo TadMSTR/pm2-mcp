@@ -77,7 +77,14 @@ testpaths = ["tests"]
 # floor existing in config but only being applied by a CI flag is how a floor ends up
 # unenforced everywhere it would actually catch something — which is the state this repo was
 # in before 2026-09-09. Requires pytest-cov, which the locked dev extra installs.
-addopts = "--cov=pm2_mcp --cov-report=term-missing"
+# `-m "not integration"`: tests/test_integration_pm2.py starts a real pm2 daemon. It runs as
+# its own CI job (`pytest -m integration --no-cov`; a later -m replaces this one), and must
+# stay out of mutmut's runs, which inherit these addopts: every _run_pm2 mutant would
+# otherwise drive a live daemon.
+addopts = "--cov=pm2_mcp --cov-report=term-missing -m 'not integration'"
+markers = [
+    "integration: needs a real pm2 CLI; starts and kills a private daemon (vikunja#771)",
+]
 
 [tool.coverage.run]
 source = ["pm2_mcp"]

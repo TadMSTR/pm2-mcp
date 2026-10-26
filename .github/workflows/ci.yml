@@ -120,6 +120,44 @@ jobs:
           path: mutmut-results.txt
           if-no-files-found: warn
 
+  # vikunja#771: the write verbs against a real pm2 CLI and a private daemon, in shadow and
+  # enforce mode, plus a negative control that must fail. tests/test_integration_pm2.py
+  # explains the isolation. pm2 is pinned to the version forge runs, and installed under
+  # RUNNER_TEMP with the runner's own node, so it is reachable only through PATH.
+  integration:
+    name: Integration (real pm2 6.0.14)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # No token left in .git/config for later steps to read.
+          persist-credentials: false
+      - id: py
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          # Without this the SHA-pinned action fetches the latest uv. Move it by hand, in
+          # every job, alongside a `uv lock` refresh.
+          version: "0.13.4"
+      # FROM THE LOCK. `--frozen` installs exactly uv.lock and fails rather than
+      # re-resolve, so a green run is evidence about the set that is deployed.
+      - name: Install dependencies (locked, [dev])
+        env:
+          UV_PYTHON: ${{ steps.py.outputs.python-path }}
+        run: uv sync --frozen --extra dev
+      - name: Install pm2 6.0.14
+        run: |
+          set -euo pipefail
+          npm install --prefix "$RUNNER_TEMP/pm2" --no-audit --no-fund pm2@6.0.14
+          echo "$RUNNER_TEMP/pm2/node_modules/.bin" >> "$GITHUB_PATH"
+      - name: pm2 is the pinned version
+        run: test "$(pm2 --version)" = "6.0.14"
+      - name: Integration tests
+        run: uv run --frozen --no-sync pytest -m integration --no-cov -v
+
   # The newest versions pyproject.toml allows, not the lock. The lock is what ships, so
   # every other job tests it; this one exists because a pin alone hides a forward-
   # compatibility break until the day someone re-resolves (vikunja#611).
