@@ -14,9 +14,11 @@ non-editable, first: the running code is then the installed package, not the che
 uv sync --frozen --no-dev --no-editable
 uv pip freeze -q -p .venv | grep -v '^pm2-mcp ' \
   | uvx -q --from pip-audit==2.10.1 pip-audit --strict -r /dev/stdin --no-deps --disable-pip
-pm2 start ecosystem.config.js --only pm2-mcp
-pm2 save
 ```
+
+Then start it with the clean-start command and check from
+[Starting it cleanly](#starting-it-cleanly), and only then `pm2 save`. Never a bare
+`pm2 start` from the shell you happen to be in.
 
 The audit line checks what is actually installed, which is the set that runs. CI audits
 the lock; this checks that the venv matches it. The project's own line is filtered out
@@ -68,6 +70,42 @@ Values are never logged and there are canary tests pinning that. But variable *n
 still a disclosure, and the difference between those two rows is entirely who ran the start
 command. The log is mode 644 in the service account's home.
 
+### Starting it cleanly
+
+`pm2 start` copies the **calling process's** environment into the app, and `pm2 save` writes
+it to `~/.pm2/dump.pm2`. "Start it from a clean shell" is only a rule until it is a command, so
+here is the command. Run it from the repository checkout:
+
+```bash
+env -i HOME="$HOME" PATH=/usr/bin:/bin PM2_HOME="${PM2_HOME:-$HOME/.pm2}" \
+  pm2 start ecosystem.config.js --only pm2-mcp
+```
+
+`env -i` empties the environment and the three assignments put back only what pm2 and the
+server need. The shell expands `$HOME` and `$PM2_HOME` before `env -i` runs. `PATH` must
+reach both `pm2` and `node`; widen it (say, `/usr/local/bin:/usr/bin:/bin`) if they live
+elsewhere on your host.
+
+**Check before you save.** This prints the names (never the values) of everything the app
+captured beyond the clean set, and exits 1 if there is anything:
+
+```bash
+pm2 jlist | python3 -c '
+import json, sys
+allowed = {"HOME", "PATH", "PM2_HOME", "PM2_USAGE", "PM2_JSON_PROCESSING",
+           "PM2_INTERACTOR_PROCESSING", "pm2-mcp", "unique_id"}
+[app] = [a for a in json.load(sys.stdin) if a["name"] == "pm2-mcp"]
+extra = sorted(set(app["pm2_env"].get("env", {})) - allowed)
+print("captured env beyond the clean set:", ", ".join(extra) or "none")
+sys.exit(1 if extra else 0)'
+```
+
+The extra names are pm2's own (`PM2_USAGE`, `PM2_INTERACTOR_PROCESSING`), plus the app name
+and `unique_id`, which pm2 adds to every app. Exit 0: `pm2 save`. Exit 1: **do not save.**
+Run `pm2 delete pm2-mcp`, find out where the extra variables came from, and start again. Measured
+2026-10-25 against a throwaway daemon, pm2 6.0.14: the command above gives `none`. A plain
+`pm2 start` from an agent session gives 61 captured variables, `CLAUDE_*` among them.
+
 ## Choosing the bind address
 
 Resolved with precedence **command-line flags > `MCP_HOST`/`MCP_PORT` > `127.0.0.1:8486`**,
@@ -98,20 +136,17 @@ If you see this error after a config change, the fix is the config, not the guar
 
 ### Changing `ecosystem.config.js` needs more than `pm2 restart`
 
-`pm2 restart` re-execs the script from disk, so **code** changes land. It re-reads its
-configuration from PM2's own dump, not from `ecosystem.config.js`, so **config** changes do
-not. Measured 2026-09-10: the file was edited 2026-09-09 21:17 and the process restarted
+`pm2 restart` re-execs the installed entry point, `.venv/bin/pm2-mcp`. Since v0.5.0 that is
+the package installed in the venv, so a change made only in the checkout does **not** land
+on a restart. Reinstall first (`uv sync --frozen --no-dev --no-editable`). `restart` also
+re-reads its configuration from PM2's own dump, not from `ecosystem.config.js`, so **config**
+changes do not land either. Measured 2026-09-10: the file was edited 2026-09-09 21:17 and the process restarted
 2026-09-10 05:53, yet the live process still carried `args` the file no longer declared.
 
-Applying a change to that file needs:
-
-```bash
-pm2 delete pm2-mcp && pm2 start ecosystem.config.js --only pm2-mcp && pm2 save
-```
-
-**Do that from a clean shell or at boot, never from an interactive agent session** — see the
-rule above. `pm2 start` re-captures the calling shell's entire environment, and since v0.4.0
-the shadow log records the names of everything withheld.
+Applying a change to that file needs `pm2 delete pm2-mcp`, then the clean-start command and
+check from [Starting it cleanly](#starting-it-cleanly), then `pm2 save`. Never a bare
+`pm2 start`: it re-captures the calling shell's entire environment, and since v0.4.0 the
+shadow log records the names of everything withheld.
 
 ## Health check
 
@@ -245,7 +280,7 @@ itself is an operator decision, not something to do as part of another change.
 | Tools time out, process `online` | `pm2 restart pm2-mcp`, then re-check the bind with `ss` |
 | Crash loop (`restart_time` climbing) | `pm2 logs pm2-mcp --nostream --lines 100`. Usually `.venv/bin/pm2-mcp` does not exist (the venv was not reinstalled, or holds an editable install from before v0.5.0), or `PM2_MCP_ENV_MODE` holds an unrecognised value |
 | Port 8486 held by something else | `ss -tlnp \| grep 8486`. The app will crash-loop until the port is free |
-| Bad PM2 registration (wrong args, wrong env) | Needs `pm2 delete pm2-mcp` then `pm2 start ecosystem.config.js --only pm2-mcp`. **This server cannot do it** — there is no `delete` verb, deliberately |
+| Bad PM2 registration (wrong args, wrong env) | Needs `pm2 delete pm2-mcp`, then the clean start and check from [Starting it cleanly](#starting-it-cleanly). **This server cannot do it** — there is no `delete` verb, deliberately |
 
 A `pm2 delete` + `pm2 start` cycle re-reads `ecosystem.config.js`; a plain `pm2 restart` does
 **not**. Changes to that file therefore have no effect until someone does the full cycle —
@@ -254,21 +289,35 @@ force, because that is the moment a fresh environment is captured.
 
 ## Upgrading
 
+### From v0.4.x to v0.5.0: a launch-path change, so no `pm2 restart`
+
+v0.4.x ran `.venv/bin/python3 server.py` from the checkout; v0.5.0 runs `.venv/bin/pm2-mcp`.
+PM2 holds the old definition in its dump, and once the checkout is at v0.5.0 there is no
+top-level `server.py`, so **a `pm2 restart` at any point after the pull crash-loops**. In
+this order:
+
+```bash
+git -C /path/to/pm2-mcp pull
+cd /path/to/pm2-mcp && uv sync --frozen --no-dev --no-editable
+# the deployed-venv audit from "Deploying" above: expect no known vulnerabilities
+pm2 delete pm2-mcp
+# the clean-start command and check from "Starting it cleanly"; exit 0, then:
+pm2 save
+```
+
+Then run the deploy-verification checks above, including the Host check over the wire.
+
+### Later upgrades within v0.5.x
+
 ```bash
 git -C /path/to/pm2-mcp pull
 cd /path/to/pm2-mcp && uv sync --frozen --no-dev --no-editable
 pm2 restart pm2-mcp
 ```
 
-Then run the deploy-verification check above. The reinstall is what changes the running
-code; `restart` alone would re-exec the old installed package. `ecosystem.config.js` changes
-need the delete/start cycle as well.
-
-**Upgrading from v0.4.x to v0.5.0 is a launch-path change.** v0.4.x ran `.venv/bin/python3
-server.py` from the checkout; v0.5.0 runs `.venv/bin/pm2-mcp`. Once the checkout is at
-v0.5.0, the old definition fails on its next restart, because `server.py` is no longer at
-the top level. So reinstall, then do the full `pm2 delete` + `pm2 start
-ecosystem.config.js` cycle from a clean shell, and `pm2 save`.
+The reinstall is what changes the running code; `restart` alone would re-exec the old
+installed package. An `ecosystem.config.js` change needs the delete and clean-start cycle
+instead of `restart`.
 
 ## Logs
 

@@ -20,7 +20,7 @@ It runs as an ordinary user, not root, and inherits exactly that user's authorit
 | Boundary | Who is trusted | Enforcement |
 |---|---|---|
 | The MCP port (`127.0.0.1:8486`) | **Everyone who can reach it** | None — no authentication |
-| A browser on this host → the port | Nobody | `HostOriginGuard`: loopback `Host` only, any `Origin` refused (v0.5.0) |
+| A browser on this host → the port | Nobody | `HostOriginGuard`: loopback or bound-address `Host` only, any non-empty `Origin` refused (v0.5.0) |
 | Tool arguments → `pm2` argv | Nobody | `_find_service` allowlist + list-form `subprocess.run` |
 | This process's env → `pm2` child | Nothing | `_clean_env()` |
 | `pm2 jlist` output → tool response | n/a | `_parse_summary` field allowlist |
@@ -54,10 +54,17 @@ open a raw socket, but with DNS rebinding a page on an attacker's domain can re-
 name at `127.0.0.1` and then make same-origin requests to this port from the operator's own
 browser. The browser still sends the
 attacker's hostname in `Host`, so `HostOriginGuard` (mcp's `TransportSecurityMiddleware`,
-applied explicitly) refuses any `Host` that is not `127.0.0.1`, `localhost` or `[::1]`, on
-any port, with 421. Any request carrying an `Origin` gets 403: only browsers send one, and no
-browser is a client. `PM2_MCP_ALLOWED_HOSTS` can add exact `Host` values and is unset by
-default. Refusals are logged by status only, never by header value.
+applied explicitly) refuses with 421 any `Host` that is not `127.0.0.1`, `localhost`,
+`[::1]` or the address the server bound, followed by `:` and a port. A request carrying a
+non-empty `Origin` gets 403: only browsers send one, and no browser is a client.
+`PM2_MCP_ALLOWED_HOSTS` can add exact `Host` values (an entry containing `*` refuses to
+start) and is unset by default. Refusals are logged by status only, never by header value.
+
+Two looser edges, stated so nobody reads more into "loopback only" than is there. mcp's
+port wildcard is a prefix match, `startswith("localhost:")`, so `localhost:8486.evil.example`
+also passes. And an empty `Origin:` header counts as absent. A browser can send neither: a
+URL port is digits, and browsers never send an empty Origin. Neither reopens DNS rebinding.
+A non-browser local caller could send both, but it can reach the port anyway (§1).
 
 Before v0.4.0 the first point read "binds `127.0.0.1` by default … without someone
 deliberately proxying it or changing `MCP_HOST`", and that was the weaker claim: a one-word

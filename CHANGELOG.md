@@ -7,16 +7,18 @@ All notable changes to pm2-mcp are documented here.
 **Deploy note: the launch path changes.** The PM2 app now runs the `pm2-mcp` console entry
 point from the venv, not `python3 server.py` from the checkout. Reinstall from `uv.lock`
 (`uv sync --frozen --no-dev --no-editable`), then `pm2 delete pm2-mcp` and
-`pm2 start ecosystem.config.js --only pm2-mcp` from a clean shell, and `pm2 save`. See
-docs/operations.md, "Upgrading".
+the `env -i` clean start from docs/operations.md ("Starting it cleanly"), its check, and only
+then `pm2 save`. A `pm2 restart` after the pull crash-loops. See docs/operations.md,
+"Upgrading".
 
 ### Security
 
 - **Host/Origin check on the HTTP app.** `HostOriginGuard` applies mcp's
-  `TransportSecurityMiddleware`: a `Host` other than `127.0.0.1`, `localhost` or `[::1]` (any
-  port) gets 421, any request carrying an `Origin` gets 403, and a websocket is closed with
-  1008. `PM2_MCP_ALLOWED_HOSTS` adds exact `Host` values; it is unset by default. Refusals are
-  logged by status, never by header value.
+  `TransportSecurityMiddleware`: a `Host` other than `127.0.0.1`, `localhost`, `[::1]` or the
+  bound address (any port) gets 421, a request carrying a non-empty `Origin` gets 403, and a
+  websocket is closed with 1008. `PM2_MCP_ALLOWED_HOSTS` adds exact `Host` values, refuses to
+  start on an entry containing `*`, and is unset by default. Refusals are logged by status,
+  never by header value.
 - **Dependency minimums raised**, each with the advisory it closes in `pyproject.toml`:
   `fastmcp>=3.4.10,<4`, `mcp>=1.30,<2`, and floors on anyio, certifi, cryptography, joserfc,
   opentelemetry-api, PyJWT, pydantic-settings, python-multipart, starlette and urllib3.
@@ -59,6 +61,13 @@ docs/operations.md, "Upgrading".
   use, so with `--host`/`--port` passed (as `ecosystem.config.js` does) it could report a
   port the server was not listening on.
 - The comment on `_ENV_MODE` said the mode was not read from the environment; it is.
+- `--host 127.0.0.2` (any 127.0.0.0/8 address, which the bind check accepts) started and
+  then answered every request 421. The bound address is now an allowed `Host`.
+- Mutation gate: every trust-boundary mutant must be `killed`. It failed only on
+  `survived`, so `no tests`, `not checked` (an aborted run) and `timeout` passed, and so did
+  the positive control and the floors. `tests/test_mutation_gate.py` drives the script
+  through a stub mutmut, one case per status.
+- `.gitignore`: `core.[0-9]*` instead of `core.*`, which would also have ignored a `core.py`.
 - Mutation gate: the survivor check is no longer anchored on the module path, which the
   `src/` move changed. An anchored pattern left behind by such a move matches nothing and
   passes with survivors present. Mutant counts are unchanged (`_clean_env` 25,

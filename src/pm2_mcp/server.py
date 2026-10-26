@@ -304,23 +304,46 @@ _LOOPBACK_NAMES = ("127.0.0.1", "localhost", "[::1]")
 _ALLOWED_HOSTS_ENV_VAR = "PM2_MCP_ALLOWED_HOSTS"
 
 
-def _transport_security_settings(env: dict | None = None) -> TransportSecuritySettings:
-    """Loopback names on any port, plus exact Host values from PM2_MCP_ALLOWED_HOSTS.
+def _transport_security_settings(
+    env: dict | None = None, bind_host: str | None = None
+) -> TransportSecuritySettings:
+    """Loopback names on any port, the bound host, and exact PM2_MCP_ALLOWED_HOSTS values.
 
-    The variable is comma-separated and unset by default. Its entries are matched
-    exactly, port included, so `name:8486` admits that name on that port only.
+    "Any port" is mcp's wildcard, `name:*`, and that is a PREFIX match:
+    `startswith(name + ":")`. So `localhost:8486.evil.example` passes too. No browser can
+    send that (a URL port is digits only), so it does not reopen DNS rebinding, and a
+    non-browser local caller can reach the port anyway (no authentication, by design).
 
-    No Origin is allowed at all. No browser is a legitimate client and only browsers
-    send Origin, so a request carrying one is refused (403) whatever it names. Allowing
-    loopback origins would trust every web app served on this host. A request without
-    the header, which is every MCP client, passes.
+    `bind_host` is the address main() bound. `_is_loopback` accepts all of 127.0.0.0/8, so
+    `--host 127.0.0.2` is a valid bind whose clients send `Host: 127.0.0.2:<port>`.
+    Without this the server would start and then answer every request 421 (audit F-03).
+
+    PM2_MCP_ALLOWED_HOSTS is comma-separated and unset by default. Its entries must be
+    exact, `name:port`: an entry containing `*` would be a wildcard to mcp, so it raises
+    ValueError and main() refuses to start (audit F-04).
+
+    No Origin is allowed. No browser is a legitimate client and only browsers send Origin,
+    so a request carrying one is refused (403) whatever it names. Allowing loopback
+    origins would trust every web app served on this host. A request without the header,
+    which is every MCP client, passes, and so does an empty `Origin:` value, which mcp
+    treats as absent and no browser sends.
     """
     env = os.environ if env is None else env
-    hosts = [f"{name}:*" for name in _LOOPBACK_NAMES]
-    hosts += [h.strip() for h in env.get(_ALLOWED_HOSTS_ENV_VAR, "").split(",") if h.strip()]
+    names = list(_LOOPBACK_NAMES)
+    if bind_host is not None:
+        literal = f"[{bind_host}]" if ":" in bind_host else bind_host
+        if literal not in names:
+            names.append(literal)
+    hosts = [f"{name}:*" for name in names]
+    extras = [h.strip() for h in env.get(_ALLOWED_HOSTS_ENV_VAR, "").split(",") if h.strip()]
+    if any("*" in h for h in extras):
+        raise ValueError(
+            f"{_ALLOWED_HOSTS_ENV_VAR} entries must be exact host:port values; "
+            f"an entry contains '*', which mcp would treat as a wildcard"
+        )
     return TransportSecuritySettings(
         enable_dns_rebinding_protection=True,
-        allowed_hosts=hosts,
+        allowed_hosts=hosts + extras,
         allowed_origins=[],
     )
 
@@ -361,8 +384,8 @@ class HostOriginGuard:
         await self.app(scope, receive, send)
 
 
-def _http_middleware() -> list[Middleware]:
-    return [Middleware(HostOriginGuard, settings=_transport_security_settings())]
+def _http_middleware(bind_host: str | None = None) -> list[Middleware]:
+    return [Middleware(HostOriginGuard, settings=_transport_security_settings(bind_host=bind_host))]
 
 
 # ---------------------------------------------------------------------------
@@ -759,9 +782,13 @@ def main(argv: list | None = None) -> None:
         )
     # argv None makes argparse read sys.argv[1:] itself.
     host, port = _resolve_bind(argv)
+    try:
+        middleware = _http_middleware(bind_host=host)
+    except ValueError as e:
+        raise SystemExit(f"pm2-mcp: refusing to start: {e}") from None
     _BIND = (host, port)
     _log.info("starting on %s:%d, env-allowlist mode %s", host, port, _ENV_MODE)
-    mcp.run(transport="streamable-http", host=host, port=port, middleware=_http_middleware())
+    mcp.run(transport="streamable-http", host=host, port=port, middleware=middleware)
 
 
 if __name__ == "__main__":

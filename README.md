@@ -108,7 +108,9 @@ This repository ships the `ecosystem.config.js` it actually deploys with — use
 than the sketch this section used to contain:
 
 ```bash
-pm2 start ecosystem.config.js --only pm2-mcp
+env -i HOME="$HOME" PATH=/usr/bin:/bin PM2_HOME="${PM2_HOME:-$HOME/.pm2}" \
+  pm2 start ecosystem.config.js --only pm2-mcp
+# check what it captured before saving: docs/operations.md, "Starting it cleanly"
 pm2 save
 ```
 
@@ -117,16 +119,11 @@ and the log paths. Leave the rest alone — in particular `env: {}`, which is em
 carries a comment explaining why. See [examples/](examples/) and
 [docs/operations.md](docs/operations.md).
 
-**Start it from PM2 at boot, not from an interactive shell.** `pm2 start` hands the calling
-shell's entire environment to the daemon, and `pm2 save` writes it to disk. That is how a
-live credential ended up in a world-readable `dump.pm2` for nine days.
-
-Or inline:
-
-```bash
-pm2 start .venv/bin/pm2-mcp --interpreter none --name pm2-mcp -- --host 127.0.0.1 --port 8486
-pm2 save
-```
+**Never a bare `pm2 start` from an interactive shell.** `pm2 start` hands the calling
+shell's entire environment to the app, and `pm2 save` writes it to disk. That is how a live
+credential ended up in a world-readable `dump.pm2` for nine days. `env -i` above is what
+prevents it, and [docs/operations.md](docs/operations.md#starting-it-cleanly) has the check
+to run before `pm2 save`.
 
 The server manages itself like any other PM2 service — it will appear in its own `list_services` output.
 
@@ -160,7 +157,7 @@ Precedence is per-field, not all-or-nothing: passing only `--host` leaves the po
 |----------|---------|-------------|
 | `MCP_HOST` | `127.0.0.1` | Bind address. Must be loopback. |
 | `MCP_PORT` | `8486` | Port for the MCP server |
-| `PM2_MCP_ALLOWED_HOSTS` | unset | Extra `Host` header values to accept, comma-separated and matched exactly (`name:port`). Loopback names are always accepted. See [Security](#security). |
+| `PM2_MCP_ALLOWED_HOSTS` | unset | Extra `Host` header values to accept, comma-separated, each an exact `name:port`. An entry containing `*` refuses to start. Loopback names and the bound address are always accepted. See [Security](#security). |
 | `PM2_MCP_ENV_MODE` | `shadow` | Environment allowlist mode: `shadow` or `enforce`. Any other value refuses to start. See [Security](#security). |
 
 Copy `.env.example` to `.env` and fill in the values you need. Blank environment variables
@@ -207,7 +204,7 @@ Add to `~/.claude/settings.json` under `mcpServers`:
 
 The server binds loopback only, and **that is enforced in code rather than defaulted** — a non-loopback `--host` or `MCP_HOST` exits non-zero instead of starting, with no override flag. See [Bind address and port](#bind-address-and-port). Any client that *can* reach port 8486 can restart or stop services, because there is no authentication. That is intentional for local agent use: keep it loopback-only and don't proxy it externally.
 
-A loopback bind keeps other machines out but not a browser on the same host, which DNS rebinding can point at `127.0.0.1`. So every HTTP request is also checked for its `Host` and `Origin` headers (since v0.5.0): a `Host` that is not `127.0.0.1`, `localhost` or `[::1]` (on any port) gets **421**, and a request carrying any `Origin` at all gets **403**, because only browsers send one and no browser is a client. `PM2_MCP_ALLOWED_HOSTS` adds exact extra `Host` values; it is unset by default and nothing on forge needs it.
+A loopback bind keeps other machines out but not a browser on the same host, which DNS rebinding can point at `127.0.0.1`. So every HTTP request is also checked for its `Host` and `Origin` headers (since v0.5.0): a `Host` that is not `127.0.0.1`, `localhost`, `[::1]` or the bound address, followed by `:` and a port, gets **421**, and a request carrying a non-empty `Origin` gets **403**, because only browsers send one and no browser is a client. The port match is mcp's prefix wildcard, so it accepts anything after the `:`; a browser can only send digits there. `PM2_MCP_ALLOWED_HOSTS` adds exact extra `Host` values; it is unset by default and nothing on forge needs it.
 
 The write tools (`restart_service`, `stop_service`, `start_service`, `reload_service`, `flush_logs`) and `get_logs` validate service names against the live PM2 process list before acting. An unrecognized name returns `{ok: false, error: "service '...' not found"}` without touching PM2.
 

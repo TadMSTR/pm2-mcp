@@ -195,11 +195,14 @@ def test_write_verbs_work_and_take_effect(pm2_home, as_pm2_child, monkeypatch, m
 
     log = _out_log(pm2_cli)
     _wait(lambda: log.exists() and log.stat().st_size > 0, "log output to flush")
+    # Stop first, so no writer is active between the flush and the size check. Flushing a
+    # running app and then stopping it raced the next probe line on a slow runner
+    # (CodeRabbit CR-02, 2026-10-25).
+    assert server.stop_service(APP) == {"ok": True, "name": APP}
+    assert _status(pm2_cli) == "stopped"
+    assert log.stat().st_size > 0
     assert server.flush_logs(APP) == {"ok": True, "name": APP}
-    # The app keeps writing, so "emptied" means it shrank to well under what it held.
-    # Stop first, so the check is not racing the next line.
-    server.stop_service(APP)
-    assert log.stat().st_size < 200
+    assert log.stat().st_size == 0
 
     dump = Path(home) / "dump.pm2"
     dump.unlink(missing_ok=True)

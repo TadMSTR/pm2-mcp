@@ -34,7 +34,9 @@ fi
 echo "==> Running mutmut (exit code intentionally ignored; the gate is below)"
 "$MUTMUT" run || true
 
-"$MUTMUT" results > "$RESULTS"
+# Every mutant with its status, killed ones included: `results` alone omits killed
+# mutants, and the floors below need the total. Everything after this reads the file.
+"$MUTMUT" results --all true > "$RESULTS"
 
 # --- Positive control -------------------------------------------------------------
 # Without this, the gate passes vacuously in every case where it is most needed. The
@@ -42,7 +44,7 @@ echo "==> Running mutmut (exit code intentionally ignored; the gate is below)"
 # crashing, aborting at stats collection, or the functions being renamed — produces no
 # match and reads exactly like a clean run. Assert the gate actually looked at
 # something before trusting it to have found nothing.
-evaluated=$("$MUTMUT" results --all true | grep -cE "x__(${FUNCS})__mutmut_[0-9]+" || true)
+evaluated=$(grep -cE "x__(${FUNCS})__mutmut_[0-9]+: " "$RESULTS" || true)
 if [ "$evaluated" -eq 0 ]; then
   echo "FAIL: mutmut evaluated ZERO mutants in the trust-boundary functions."
   echo "      The gate cannot pass on an empty result set — it would be reporting"
@@ -99,7 +101,7 @@ fi
 # delegated to _is_loopback, revisit this and re-measure.
 # _transport_security_settings and HostOriginGuard (v0.5.0) are NOT in FUNCS either, for
 # the same reason as _resolve_bind: their survivors are equivalent, so a zero-survivor rule
-# could only go green by asserting nothing. MEASURED 2026-10-25: 78 mutants, 75 killed. The
+# could only go green by asserting nothing. MEASURED 2026-10-25: 92 mutants, 89 killed (78/75 before the audit fixes). The
 # three survivors, each checked by diff:
 #     validate_request(..., is_post=False) -> is_post=None      None is falsy, same branch
 #     validate_request(..., is_post=False) -> argument dropped  False is the default
@@ -114,7 +116,7 @@ fi
 declare -A MIN_MUTANTS=( [clean_env]=25 [allowlist_env]=1 [denylist_env]=4 [run_pm2]=22 [is_loopback]=6 )
 
 for fn in clean_env allowlist_env denylist_env run_pm2 is_loopback; do
-  n=$("$MUTMUT" results --all true | grep -cE "x__${fn}__mutmut_[0-9]+" || true)
+  n=$(grep -cE "x__${fn}__mutmut_[0-9]+: " "$RESULTS" || true)
   floor=${MIN_MUTANTS[$fn]}
   if [ "$n" -eq 0 ]; then
     echo "FAIL: no mutants were generated for _${fn}. Renamed, or no longer mutable?"
@@ -137,16 +139,29 @@ done
 # anchored pattern left behind by such a move matches nothing, and the gate then passes
 # with survivors present, while the positive control above (which never was anchored)
 # still counts them as evaluated. The function-name part is what identifies the mutant.
-if grep -E "x__(${FUNCS})__mutmut_[0-9]+: survived" "$RESULTS"; then
+#
+# EVERY STATUS BUT `killed` FAILS, not just `survived` (audit 2026-10-25, F-02). mutmut
+# 3.7 also reports `no tests`, `not checked`, `timeout`, `suspicious`, `segfault` and
+# `skipped`. `no tests` is a mutant no test even reached, which is worse than a survivor,
+# and it is what a stale mutants/ cache produces. `not checked` is what a run aborted
+# partway leaves, and `mutmut run || true` above would not notice. A grep for `survived`
+# passed all of them, and so did the positive control and the floors, which count lines
+# whatever their status. tests/test_mutation_gate.py drives this script through a stub
+# mutmut, one case per status.
+not_killed=$(grep -E "x__(${FUNCS})__mutmut_[0-9]+: " "$RESULTS" \
+  | grep -vE ": killed[[:space:]]*$" || true)
+if [ -n "$not_killed" ]; then
+  echo "$not_killed"
   echo ""
-  echo "FAIL: a mutant survived in a trust-boundary function (vikunja#767, #769)."
+  echo "FAIL: a trust-boundary mutant was not killed (vikunja#767, #769)."
   echo "      These are the functions that keep session credentials and PM2 IPC vars"
-  echo "      out of the environment handed to the pm2 CLI. A survivor here means a"
-  echo "      change to that behaviour that no test objects to."
+  echo "      out of the environment handed to the pm2 CLI, and decide the bind. A"
+  echo "      survivor is a change no test objects to; 'no tests' or 'not checked' is"
+  echo "      one no test even ran. Delete mutants/ and re-run before trusting either."
   exit 1
 fi
 
 echo ""
-echo "PASS: zero surviving mutants across ${evaluated} mutants in the trust-boundary set"
+echo "PASS: all ${evaluated} trust-boundary mutants killed"
 echo "      (_clean_env, _allowlist_env, _denylist_env, _run_pm2, _is_loopback)."
 echo "      (_parse_summary survivors are expected and deliberately not gated.)"

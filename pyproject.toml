@@ -144,7 +144,13 @@ pytest_add_cli_args_test_selection = ["tests/"]
 # low enough to survive stats collection would instead have marked mutants killed by the
 # gate rather than by a test, and a trust-boundary mutant nothing tests would have been
 # reported as caught.
-pytest_add_cli_args = ["--no-cov"]
+#
+# --ignore=tests/test_mutation_gate.py: that module tests scripts/mutation-gate.sh, which
+# mutmut does not copy into mutants/, and it has no pm2_mcp mutants to kill. Collected
+# there, it failed on the missing script and aborted stats collection, leaving most
+# mutants `not checked`. Measured 2026-10-25, the first run after it was added: the
+# hardened gate failed on that (F-02); the old one would have printed PASS.
+pytest_add_cli_args = ["--no-cov", "--ignore=tests/test_mutation_gate.py"]
 # The gate must evaluate the WHOLE trust-boundary mutant set on every run, not just the
 # mutants touching code that changed since the last commit. With change detection left on,
 # a PR that does not touch server.py could evaluate nothing and the survivor check would

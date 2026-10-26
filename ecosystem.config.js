@@ -7,15 +7,23 @@ module.exports = {
       // the checkout. Changing it needs `pm2 delete` + `pm2 start` (see below), and the
       // venv must hold a NON-editable install from uv.lock first, or this path does not
       // exist.
+      // SECURITY[accepted]: the entry point and its venv live inside this checkout,
+      // which anything running as this user can write (HA-34 residual). Better than
+      // v0.4.x, which ran server.py straight from the working tree: with a
+      // non-editable install, a pull or an edit in the checkout changes nothing until
+      // someone reinstalls. It is the norm for every PM2-run MCP server on this host,
+      // so it is recorded rather than moved. Audit: 2026-10-25/pm2-mcp-review-2026-10
+      // (F-06, Info).
       script: "/home/ted/repos/personal/pm2-mcp/.venv/bin/pm2-mcp",
       args: ["--host", "127.0.0.1", "--port", "8486"],
       cwd: "/home/ted/repos/personal/pm2-mcp",
       interpreter: "none",
 
       // Empty ON PURPOSE — this server requires nothing from the environment.
-      // The only two variables the source reads are MCP_HOST and MCP_PORT.
-      // Neither is set in the running process today, so the bind address comes
-      // from the defaults in src/pm2_mcp/server.py: 127.0.0.1:8486.
+      // The variables the source reads are MCP_HOST, MCP_PORT, PM2_MCP_ENV_MODE and
+      // PM2_MCP_ALLOWED_HOSTS, and every one has a safe default when unset. None is
+      // set in the running process today, so the bind comes from `args` below and
+      // the mode is shadow.
       //
       // THE FLAGS IN `args` ABOVE ARE LIVE AS OF vikunja#770 (2026-09-10).
       // Say that plainly, because for months they were NOT and the comment here
@@ -44,8 +52,10 @@ module.exports = {
       // the file no longer declared. `pm2 restart` re-execs the script from disk
       // but re-reads its config from PM2's own dump, not from here. Since v0.5.0
       // the code it re-execs is the INSTALLED package in .venv, not the checkout:
-      // a `git pull` changes nothing until the venv is reinstalled from uv.lock. Applying a change to this file needs `pm2 delete` +
-      // `pm2 start ecosystem.config.js` — which re-captures the calling shell's
+      // a `git pull` changes nothing until the venv is reinstalled from uv.lock.
+      // Applying a change to this file needs `pm2 delete` + `pm2 start
+      // ecosystem.config.js`. Use the `env -i` form and its check in
+      // docs/operations.md ("Starting it cleanly"): a bare `pm2 start` re-captures the calling shell's
       // entire environment (the vikunja#767 mechanism) and, since #772 made the
       // shadow log actually reach disk, would now also write the NAMES of every
       // withheld variable in that shell to /home/ted/logs/pm2-mcp.log. Measured:

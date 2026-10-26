@@ -297,3 +297,58 @@ def test_unknown_env_mode_message_names_the_value_and_the_choices(
     message = str(raised.value)
     # Bounded: the value is caller-controlled, so at most 32 characters are echoed.
     assert f"PM2_MCP_ENV_MODE={'x' * 32!r} is not one of shadow, enforce." in message
+
+
+def test_bound_non_default_loopback_is_served(monkeypatch):
+    """`--host 127.0.0.2` is a valid bind; its clients send that Host (audit F-03)."""
+    monkeypatch.delenv("PM2_MCP_ALLOWED_HOSTS", raising=False)
+    app = server.mcp.http_app(path="/mcp", middleware=server._http_middleware("127.0.0.2"))
+    with TestClient(app) as c:
+        ok = c.post("/mcp", json=INIT, headers={**HEADERS, "host": "127.0.0.2:8486"})
+        other = c.post("/mcp", json=INIT, headers={**HEADERS, "host": "127.0.0.3:8486"})
+    assert ok.status_code == 200, ok.text
+    # Only the bound address joins the set, not the whole of 127.0.0.0/8.
+    assert other.status_code == 421
+
+
+@pytest.mark.parametrize(
+    ("bind", "expected"),
+    [
+        ("127.0.0.1", ["127.0.0.1:*", "localhost:*", "[::1]:*"]),
+        ("localhost", ["127.0.0.1:*", "localhost:*", "[::1]:*"]),
+        ("::1", ["127.0.0.1:*", "localhost:*", "[::1]:*"]),
+        ("127.0.0.2", ["127.0.0.1:*", "localhost:*", "[::1]:*", "127.0.0.2:*"]),
+        (
+            "0:0:0:0:0:0:0:1",
+            ["127.0.0.1:*", "localhost:*", "[::1]:*", "[0:0:0:0:0:0:0:1]:*"],
+        ),
+    ],
+)
+def test_bind_host_joins_the_allowed_names_once(bind, expected):
+    settings = server._transport_security_settings(env={}, bind_host=bind)
+    assert settings.allowed_hosts == expected
+
+
+@pytest.mark.parametrize("entry", ["pm2.internal:*", "*", "*.internal:8486"])
+def test_wildcard_extra_host_is_refused(entry):
+    """An entry with `*` is a wildcard to mcp, so "exact" would be false (audit F-04)."""
+    with pytest.raises(ValueError, match="must be exact host:port"):
+        server._transport_security_settings(env={"PM2_MCP_ALLOWED_HOSTS": f"a:1,{entry}"})
+
+
+def test_main_refuses_to_start_on_a_wildcard_extra_host(monkeypatch, restored_logger_state):
+    ran = []
+    monkeypatch.setattr(server.mcp, "run", lambda **kw: ran.append(kw))
+    monkeypatch.setenv("PM2_MCP_ALLOWED_HOSTS", "pm2.internal:*")
+    with pytest.raises(SystemExit, match="refusing to start: PM2_MCP_ALLOWED_HOSTS entries"):
+        server.main([])
+    assert ran == []
+
+
+def test_main_admits_the_host_it_binds(monkeypatch, restored_logger_state):
+    seen = {}
+    monkeypatch.delenv("PM2_MCP_ALLOWED_HOSTS", raising=False)
+    monkeypatch.setattr(server.mcp, "run", lambda **kw: seen.update(kw))
+    server.main(["--host", "127.0.0.2"])
+    [mw] = seen["middleware"]
+    assert "127.0.0.2:*" in mw.kwargs["settings"].allowed_hosts
