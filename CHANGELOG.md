@@ -2,7 +2,7 @@
 
 All notable changes to pm2-mcp are documented here.
 
-## [0.5.0] — Unreleased
+## [0.5.0] — 2026-10-25
 
 **Deploy note: the launch path changes.** The PM2 app now runs the `pm2-mcp` console entry
 point from the venv, not `python3 server.py` from the checkout. Reinstall from `uv.lock`
