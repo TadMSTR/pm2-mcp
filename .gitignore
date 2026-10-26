@@ -8,8 +8,12 @@ __pycache__/
 # so a dump of it is a dump of whatever that environment contained.
 *.env
 !.env.example
-core.*
+# core.[0-9]*, not core.*: the bare form would also ignore a future core.py (SC-02).
+core.[0-9]*
 *.core
+# Key material (repo standard B6). Nothing in this repo needs a key file.
+*.key
+*.pem
 .venv/
 .coverage
 coverage.xml
@@ -20,3 +24,5 @@ mutants/
 dist/
 build/
 mutmut-results.txt
+.audit-runtime/
+.audit-dev/

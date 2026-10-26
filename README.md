@@ -28,7 +28,7 @@ flowchart LR
 |------|-------------|
 | `list_services` | List all PM2 services. Optional `status_filter`: `"online"`, `"stopped"`, or `"errored"`. |
 | `get_service` | Full detail for one service by name — script path, cwd, args, log file paths, created_at, plus all summary fields. |
-| `get_logs` | Tail recent log output. `lines` defaults to 50 (max 500); `include_errors` defaults to `true`. |
+| `get_logs` | Tail recent log output for one registered service. `lines` defaults to 50 (max 500); `include_errors` defaults to `true`. |
 | `get_status` | Server metadata and PM2 health summary — configured host/port, PM2 version, service counts by status. |
 
 ### Write
@@ -80,8 +80,8 @@ Things this server deliberately does not do. Each is a decision, not a gap:
   that way. Adding auth would imply the port could safely be exposed, which is not the
   posture this server is built for. See [docs/threat-model.md](docs/threat-model.md).
 - **It does not publish an installable artefact.** No PyPI package, no version badge. It is
-  deployed from a checkout as a PM2 process. This is why Showcase is its terminal tier
-  rather than a step toward Flagship.
+  built from a checkout and installed into that checkout's venv from `uv.lock`, then run as a
+  PM2 process.
 - **It does not manage the PM2 daemon itself** — no `pm2 kill`, no daemon resurrection, no
   startup-script installation. Those are host administration, not process inspection.
 
@@ -90,12 +90,17 @@ Things this server deliberately does not do. Each is a decision, not a gap:
 ### Requirements
 
 - Python 3.11+
+- [uv](https://docs.astral.sh/uv/)
 - PM2 installed and in PATH for the user running the server
-- `fastmcp>=3.2.4` (see `requirements.txt`)
+
+Dependencies are locked in `uv.lock`. Install the server into a venv, from the lock and
+non-editable, so the running code is the installed package rather than the checkout:
 
 ```bash
-pip install -r requirements.txt
+uv sync --frozen --no-dev --no-editable
 ```
+
+This puts the `pm2-mcp` entry point at `.venv/bin/pm2-mcp`.
 
 ### Run as a PM2 process (recommended)
 
@@ -103,35 +108,32 @@ This repository ships the `ecosystem.config.js` it actually deploys with — use
 than the sketch this section used to contain:
 
 ```bash
-pm2 start ecosystem.config.js --only pm2-mcp
+env -i HOME="$HOME" PATH=/usr/bin:/bin PM2_HOME="${PM2_HOME:-$HOME/.pm2}" \
+  pm2 start ecosystem.config.js --only pm2-mcp
+# check what it captured before saving: docs/operations.md, "Starting it cleanly"
 pm2 save
 ```
 
-Three things in it are host-specific: `script` (the venv interpreter path), `cwd`, and the
-log paths. Leave the rest alone — in particular `env: {}`, which is empty deliberately and
+Three things in it are host-specific: `script` (the venv's `pm2-mcp` entry point), `cwd`,
+and the log paths. Leave the rest alone — in particular `env: {}`, which is empty deliberately and
 carries a comment explaining why. See [examples/](examples/) and
 [docs/operations.md](docs/operations.md).
 
-**Start it from PM2 at boot, not from an interactive shell.** `pm2 start` hands the calling
-shell's entire environment to the daemon, and `pm2 save` writes it to disk. That is how a
-live credential ended up in a world-readable `dump.pm2` for nine days.
-
-Or inline with env vars:
-
-```bash
-MCP_HOST=127.0.0.1 MCP_PORT=8486 pm2 start server.py --interpreter python3 --name pm2-mcp
-pm2 save
-```
+**Never a bare `pm2 start` from an interactive shell.** `pm2 start` hands the calling
+shell's entire environment to the app, and `pm2 save` writes it to disk. That is how a live
+credential ended up in a world-readable `dump.pm2` for nine days. `env -i` above is what
+prevents it, and [docs/operations.md](docs/operations.md#starting-it-cleanly) has the check
+to run before `pm2 save`.
 
 The server manages itself like any other PM2 service — it will appear in its own `list_services` output.
 
 ### Run directly
 
 ```bash
-python server.py                                    # 127.0.0.1:8486
-python server.py --port 9000                        # override the port only
-python server.py --host 127.0.0.2 --port 9000       # both
-python server.py --help                             # full usage
+.venv/bin/pm2-mcp                                   # 127.0.0.1:8486
+.venv/bin/pm2-mcp --port 9000                       # override the port only
+.venv/bin/pm2-mcp --host 127.0.0.2 --port 9000      # both
+.venv/bin/pm2-mcp --help                            # full usage
 ```
 
 Non-loopback binds are refused; see [Bind address and port](#bind-address-and-port).
@@ -155,6 +157,8 @@ Precedence is per-field, not all-or-nothing: passing only `--host` leaves the po
 |----------|---------|-------------|
 | `MCP_HOST` | `127.0.0.1` | Bind address. Must be loopback. |
 | `MCP_PORT` | `8486` | Port for the MCP server |
+| `PM2_MCP_ALLOWED_HOSTS` | unset | Extra `Host` header values to accept, comma-separated, each an exact `name:port`. An entry containing `*` refuses to start. Loopback names and the bound address are always accepted. See [Security](#security). |
+| `PM2_MCP_ENV_MODE` | `shadow` | Environment allowlist mode: `shadow` or `enforce`. Any other value refuses to start. See [Security](#security). |
 
 Copy `.env.example` to `.env` and fill in the values you need. Blank environment variables
 are treated as unset and use the defaults shown above.
@@ -200,11 +204,13 @@ Add to `~/.claude/settings.json` under `mcpServers`:
 
 The server binds loopback only, and **that is enforced in code rather than defaulted** — a non-loopback `--host` or `MCP_HOST` exits non-zero instead of starting, with no override flag. See [Bind address and port](#bind-address-and-port). Any client that *can* reach port 8486 can restart or stop services, because there is no authentication. That is intentional for local agent use: keep it loopback-only and don't proxy it externally.
 
-The write tools (`restart_service`, `stop_service`, `start_service`, `reload_service`, `flush_logs`) validate service names against the live PM2 process list before acting. An unrecognized name returns `{ok: false, error: "service '...' not found"}` without touching PM2.
+A loopback bind keeps other machines out but not a browser on the same host, which DNS rebinding can point at `127.0.0.1`. So every HTTP request is also checked for its `Host` and `Origin` headers (since v0.5.0): a `Host` that is not `127.0.0.1`, `localhost`, `[::1]` or the bound address, followed by `:` and a port, gets **421**, and a request carrying a non-empty `Origin` gets **403**, because only browsers send one and no browser is a client. The port match is mcp's prefix wildcard, so it accepts anything after the `:`; a browser can only send digits there. `PM2_MCP_ALLOWED_HOSTS` adds exact extra `Host` values; it is unset by default and nothing on forge needs it.
+
+The write tools (`restart_service`, `stop_service`, `start_service`, `reload_service`, `flush_logs`) and `get_logs` validate service names against the live PM2 process list before acting. An unrecognized name returns `{ok: false, error: "service '...' not found"}` without touching PM2.
 
 Before invoking the `pm2` CLI the server scrubs its own environment. Today that means a denylist: PM2's IPC variables, and anything matching the `CLAUDE` prefix. `pm2 start` and `pm2 restart --update-env` copy the caller's whole environment into the target app and `pm2 save` persists it, so this is the difference between a credential staying in memory and being written to disk.
 
-A named **allowlist** (vikunja#610) is also implemented and will replace that prefix-match denylist once enabled — but it is not live yet. It runs in **shadow mode** by default: it computes and logs which variables it would withhold, per `pm2` invocation, and changes nothing. Enforcing it is an opt-in source change (`PM2_MCP_ENV_MODE=enforce`), gated on vikunja#771. Which environment reaches the `pm2` child, and why, is the most consequential thing about running this server — see [docs/threat-model.md §2](docs/threat-model.md#2-the-environment-handed-to-the-pm2-cli) for the full reasoning rather than re-deriving it here.
+A named **allowlist** (vikunja#610) is also implemented and will replace that prefix-match denylist once enabled — but it is not live yet. It runs in **shadow mode** by default: it computes and logs which variables it would withhold, per `pm2` invocation, and changes nothing. `PM2_MCP_ENV_MODE=enforce` turns it on; the decision is tracked in vikunja#771, and since v0.5.0 an integration test runs every write verb against a real pm2 in both modes. `get_status` reports which mode is running. Which environment reaches the `pm2` child, and why, is the most consequential thing about running this server — see [docs/threat-model.md §2](docs/threat-model.md#2-the-environment-handed-to-the-pm2-cli) for the full reasoning rather than re-deriving it here.
 
 Full posture, including the gaps that are accepted rather than fixed: **[docs/threat-model.md](docs/threat-model.md)**.
 
@@ -213,16 +219,22 @@ Full posture, including the gaps that are accepted rather than fixed: **[docs/th
 ## Testing
 
 ```bash
-pip install -r requirements.txt -r requirements-dev.txt
-pytest -v
+uv sync --frozen --extra dev
+uv run pytest -v
 ```
 
-All tests mock `_run_pm2` — no PM2 installation required.
+The default run mocks `_run_pm2`, so no PM2 installation is required. The write verbs are
+also tested against a real pm2 CLI and a private, temporary daemon (vikunja#771). That run
+needs pm2 on `PATH` and is separate:
+
+```bash
+uv run pytest -m integration --no-cov -v
+```
 
 Coverage and its floor are configured in `pyproject.toml`, so a bare `pytest` enforces them; there is no separate CI-only flag. Changes to `_clean_env` or `_run_pm2` should also pass the mutation gate:
 
 ```bash
-MUTMUT=.venv/bin/mutmut ./scripts/mutation-gate.sh
+rm -rf mutants && PATH="$PWD/.venv/bin:$PATH" ./scripts/mutation-gate.sh
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for what that gate does and, more importantly, what it does not cover.

@@ -1,42 +1,65 @@
 [project]
 name = "pm2-mcp"
-version = "0.4.0"
+version = "0.5.0"
 description = "FastMCP server providing structured read and limited write access to PM2 services"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
-    "fastmcp>=3.2.4,<4",
+    # Capped below 4: uv.lock pins what is tested and deployed, and the CI `latest` job
+    # resolves the newest versions these ranges allow, so a forward-compat break shows up
+    # there rather than at the next deploy (vikunja#611). Moving to 4.x is its own change.
+    #
+    # Security floors (2026-10-25). fastmcp 3.4.10 fixes GHSA-7xgj-8392-5q4r; mcp 1.30.0
+    # fixes PYSEC-2026-3481/3482/3483 and the StreamableHTTP advisories, the transport this
+    # server runs. mcp is transitive, declared only to hold that floor.
+    "fastmcp>=3.4.10,<4",
+    "mcp>=1.30,<2",
+    # Also transitive, and declared only to hold each one above its advisories' fixed
+    # version: `pip install .` into an existing venv keeps whatever it finds otherwise.
+    # pm2_mcp imports none of them. Drop an entry once fastmcp's own floor covers it.
+    "anyio>=4.14.2",              # PYSEC-2026-4024/4025
+    # 50, not 49: PYSEC-2026-3552 is fixed only in 50.0.0. pip-audit on
+    # cryptography==49.0.0 still reports it (measured 2026-10-25).
+    "cryptography>=50.0.0",       # PYSEC-2026-3552/3553/3554, GHSA-537c-gmf6-5ccf
+    "joserfc>=1.6.8",             # PYSEC-2026-2528
+    "PyJWT>=2.15.0",              # PYSEC-2026-4140..4152, CVE-2026-102275
+    "urllib3>=2.8.0",             # PYSEC-2026-4175/4176/4177
+    "pydantic-settings>=2.14.2",  # GHSA-4xgf-cpjx-pc3j
+    "python-multipart>=0.0.31",   # PYSEC-2026-3036/3037/3040
+    "starlette>=1.3.1",           # PYSEC-2026-248/249
+    "certifi>=2026.10.19",        # PYSEC-2026-4320
+    "opentelemetry-api>=1.45.1",  # CVE-2026-114603
 ]
 
-# No [project.optional-dependencies]. The `dev = ["pytest>=8.0.0"]` extra that used to sit
-# here duplicated requirements-dev.txt and nothing installed it — CI, README and AGENTS.md
-# all go through requirements-dev.txt. requirements-dev.txt is the single source for dev
-# dependencies; two lists that must be kept in sync by hand is how one of them goes stale.
+[project.optional-dependencies]
+# uv.lock is the single source for dev dependencies, which replaced requirements-dev.txt
+# (and requirements.txt) in v0.5.0: one list, locked, so CI lints, tests, mutates and
+# audits with the versions it was tested with.
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "ruff>=0.15",
+    "mutmut>=3.7,<4",
+    "pip-audit>=2.10",
+]
+
+[project.scripts]
+pm2-mcp = "pm2_mcp.server:main"
 
 [build-system]
 requires = ["setuptools>=68"]
 # `setuptools.backends.legacy:build` was here until 2026-09-09 and is not a real backend —
-# `python -m build` failed outright with `BackendUnavailable`. The package had therefore been
-# unbuildable since the backend was written, through two releases, because ci.yml's smoke test
-# imports `server` from the source tree and never touches the built artifact. Setuptools'
-# auto-discovery picks up the flat server.py from this alone; no [tool.setuptools] py-modules
-# entry is needed. (vikunja#769)
+# `python -m build` failed outright with `BackendUnavailable`, unnoticed for two releases
+# because the old smoke test imported from the source tree (vikunja#769).
 build-backend = "setuptools.build_meta"
 
-[tool.setuptools]
-# Explicit, NOT redundant — and the preflight note saying py-modules "is not required" was
-# right only about a clean tree. Setuptools' flat-layout auto-discovery infers what to ship
-# from whatever directories happen to be present, so the artifact is a function of the
-# working tree rather than of this file.
-#
-# Measured 2026-09-09: building straight after a local `mutmut run` (which leaves a
-# mutants/ directory behind) produced a wheel containing mutants/server.py and
-# mutants/tests/ and NO top-level server.py — an artifact that ships the entire mutant
-# corpus and omits the actual module. Building the same commit on a clean tree produced
-# the correct ['server.py']. CI never sees this because it builds a fresh checkout, so it
-# would have shipped from a maintainer's machine unnoticed.
-#
-# Naming the module pins the contents regardless of what else is lying around.
-py-modules = ["server"]
+[tool.setuptools.packages.find]
+# src/ layout since v0.5.0 (repo standard P2). Explicit, NOT redundant: flat-layout
+# auto-discovery inferred the wheel's contents from whatever directories were present,
+# and a build straight after a local `mutmut run` shipped mutants/server.py and
+# mutants/tests/ with NO top-level server.py (measured 2026-09-09). Naming the root and
+# the package pins the contents regardless of what else is lying around.
+where = ["src"]
+include = ["pm2_mcp*"]
 
 [tool.ruff]
 line-length = 100
@@ -45,20 +68,26 @@ target-version = "py310"
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]
 
-# Flat layout — `server` is a first-party module here, not site-packages.
 [tool.ruff.lint.isort]
-known-first-party = ["server"]
+known-first-party = ["pm2_mcp"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 # Coverage is in addopts, not just in CI, so a bare `pytest` enforces the floor below. The
 # floor existing in config but only being applied by a CI flag is how a floor ends up
 # unenforced everywhere it would actually catch something — which is the state this repo was
-# in before 2026-09-09. Requires pytest-cov, which requirements-dev.txt pins.
-addopts = "--cov=server --cov-report=term-missing"
+# in before 2026-09-09. Requires pytest-cov, which the locked dev extra installs.
+# `-m "not integration"`: tests/test_integration_pm2.py starts a real pm2 daemon. It runs as
+# its own CI job (`pytest -m integration --no-cov`; a later -m replaces this one), and must
+# stay out of mutmut's runs, which inherit these addopts: every _run_pm2 mutant would
+# otherwise drive a live daemon.
+addopts = "--cov=pm2_mcp --cov-report=term-missing -m 'not integration'"
+markers = [
+    "integration: needs a real pm2 CLI; starts and kills a private daemon (vikunja#771)",
+]
 
 [tool.coverage.run]
-source = ["server"]
+source = ["pm2_mcp"]
 
 [tool.coverage.report]
 show_missing = true
@@ -91,15 +120,15 @@ exclude_also = [
 [tool.mutmut]
 # Mutation-testing pilot (vikunja#769). The GATE is not this config — see .github/workflows/
 # ci.yml, which filters `mutmut results` by mutant key. mutmut has no function-level scoping:
-# only_mutate/do_not_mutate take FILE globs and this repo is a single flat server.py, so
+# only_mutate/do_not_mutate take FILE globs and the server is a single module, so
 # there is no config that expresses "mutate only the trust-boundary functions". Verified
 # against mutmut 3.7.0's own configuration.py.
-source_paths = ["server.py"]
+source_paths = ["src/pm2_mcp/server.py"]
 pytest_add_cli_args_test_selection = ["tests/"]
 # --no-cov is load-bearing, not tidiness, and this is the pilot's most transferable finding.
 #
 # [tool.pytest.ini_options].addopts turns coverage on for EVERY pytest run, carrying
-# fail_under = 100. mutmut works by rewriting server.py into mutants/server.py, where all 129
+# fail_under = 100. mutmut works by rewriting server.py into mutants/src/, where all 129
 # mutants exist side by side as separate functions and exactly one is active per run — 129
 # statements become 1107. By construction the other 128 mutants' bodies are never executed,
 # so coverage in that directory measures ~37% no matter how good the tests are.
@@ -115,7 +144,13 @@ pytest_add_cli_args_test_selection = ["tests/"]
 # low enough to survive stats collection would instead have marked mutants killed by the
 # gate rather than by a test, and a trust-boundary mutant nothing tests would have been
 # reported as caught.
-pytest_add_cli_args = ["--no-cov"]
+#
+# --ignore=tests/test_mutation_gate.py: that module tests scripts/mutation-gate.sh, which
+# mutmut does not copy into mutants/, and it has no pm2_mcp mutants to kill. Collected
+# there, it failed on the missing script and aborted stats collection, leaving most
+# mutants `not checked`. Measured 2026-10-25, the first run after it was added: the
+# hardened gate failed on that (F-02); the old one would have printed PASS.
+pytest_add_cli_args = ["--no-cov", "--ignore=tests/test_mutation_gate.py"]
 # The gate must evaluate the WHOLE trust-boundary mutant set on every run, not just the
 # mutants touching code that changed since the last commit. With change detection left on,
 # a PR that does not touch server.py could evaluate nothing and the survivor check would

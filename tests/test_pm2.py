@@ -13,7 +13,7 @@ from unittest.mock import MagicMock, call, patch
 
 import pytest
 
-import server
+from pm2_mcp import server
 
 # ---------------------------------------------------------------------------
 # Fixtures / helpers
@@ -81,7 +81,7 @@ class TestListServices:
     def test_parses_jlist_memory_bytes_to_mb(self):
         """memory field (bytes) should be divided by 1024^2 for memory_mb."""
         proc = _make_process(memory=104857600)  # exactly 100 MB
-        with patch("server._run_pm2", return_value=_jlist_result(proc)):
+        with patch("pm2_mcp.server._run_pm2", return_value=_jlist_result(proc)):
             result = server.list_services()
 
         assert len(result) == 1
@@ -92,7 +92,7 @@ class TestListServices:
         now_ms = int(time.time() * 1000)
         pm_uptime = now_ms - 3_600_000  # 1 hour ago
         proc = _make_process(pm_uptime=pm_uptime)
-        with patch("server._run_pm2", return_value=_jlist_result(proc)):
+        with patch("pm2_mcp.server._run_pm2", return_value=_jlist_result(proc)):
             result = server.list_services()
 
         assert result[0]["uptime_ms"] == pytest.approx(3_600_000, rel=0.01)
@@ -103,7 +103,7 @@ class TestListServices:
             _make_process(name="svc-a", status="online"),
             _make_process(name="svc-b", status="stopped"),
         ]
-        with patch("server._run_pm2", return_value=_completed(stdout=json.dumps(procs))):
+        with patch("pm2_mcp.server._run_pm2", return_value=_completed(stdout=json.dumps(procs))):
             result = server.list_services(status_filter="online")
 
         assert len(result) == 1
@@ -114,7 +114,7 @@ class TestListServices:
             _make_process(name="svc-a", status="online"),
             _make_process(name="svc-b", status="stopped"),
         ]
-        with patch("server._run_pm2", return_value=_completed(stdout=json.dumps(procs))):
+        with patch("pm2_mcp.server._run_pm2", return_value=_completed(stdout=json.dumps(procs))):
             result = server.list_services(status_filter="stopped")
 
         assert len(result) == 1
@@ -122,13 +122,13 @@ class TestListServices:
 
     def test_no_filter_returns_all(self):
         procs = [_make_process(name="a"), _make_process(name="b")]
-        with patch("server._run_pm2", return_value=_completed(stdout=json.dumps(procs))):
+        with patch("pm2_mcp.server._run_pm2", return_value=_completed(stdout=json.dumps(procs))):
             result = server.list_services()
         assert len(result) == 2
 
     def test_stopped_service_uptime_is_zero(self):
         proc = _make_process(status="stopped")
-        with patch("server._run_pm2", return_value=_jlist_result(proc)):
+        with patch("pm2_mcp.server._run_pm2", return_value=_jlist_result(proc)):
             result = server.list_services()
         assert result[0]["uptime_ms"] == 0
 
@@ -145,7 +145,7 @@ class TestListServices:
 class TestGetService:
     def test_found_returns_detail_fields(self):
         proc = _make_process()
-        with patch("server._run_pm2", return_value=_jlist_result(proc)):
+        with patch("pm2_mcp.server._run_pm2", return_value=_jlist_result(proc)):
             result = server.get_service("svc-a")
 
         assert result["name"] == "svc-a"
@@ -157,14 +157,14 @@ class TestGetService:
 
     def test_found_includes_summary_fields(self):
         proc = _make_process(memory=52428800, cpu=1.5)  # 50 MB
-        with patch("server._run_pm2", return_value=_jlist_result(proc)):
+        with patch("pm2_mcp.server._run_pm2", return_value=_jlist_result(proc)):
             result = server.get_service("svc-a")
 
         assert result["memory_mb"] == pytest.approx(50.0, abs=0.01)
         assert result["cpu_pct"] == 1.5
 
     def test_not_found_returns_error_dict(self):
-        with patch("server._run_pm2", return_value=_jlist_result()):
+        with patch("pm2_mcp.server._run_pm2", return_value=_jlist_result()):
             result = server.get_service("nonexistent")
 
         assert result == {"ok": False, "error": "not found"}
@@ -176,9 +176,14 @@ class TestGetService:
 
 
 class TestGetLogs:
+    @pytest.fixture(autouse=True)
+    def registered(self, monkeypatch):
+        """get_logs checks the name against the live process list first."""
+        monkeypatch.setattr(server, "_find_service", lambda name: {"name": name})
+
     def test_returns_stdout_and_stderr(self):
         stub = _completed(stdout="line1\nline2\n", stderr="err\n")
-        with patch("server._run_pm2", return_value=stub):
+        with patch("pm2_mcp.server._run_pm2", return_value=stub):
             result = server.get_logs("svc-a", lines=10)
 
         assert "stdout" in result
@@ -187,30 +192,57 @@ class TestGetLogs:
         assert "err" in result["stderr"]
 
     def test_calls_pm2_with_correct_args(self):
-        with patch("server._run_pm2", return_value=_completed(stdout="")) as mock:
+        with patch("pm2_mcp.server._run_pm2", return_value=_completed(stdout="")) as mock:
             server.get_logs("svc-a", lines=25)
 
         mock.assert_called_once_with("logs", "svc-a", "--nostream", "--lines", "25")
 
     def test_lines_capped_at_max(self):
-        with patch("server._run_pm2", return_value=_completed(stdout="")) as mock:
+        with patch("pm2_mcp.server._run_pm2", return_value=_completed(stdout="")) as mock:
             server.get_logs("svc-a", lines=1000)
 
         mock.assert_called_once_with("logs", "svc-a", "--nostream", "--lines", "500")
 
     def test_include_errors_false_clears_stderr(self):
-        with patch("server._run_pm2", return_value=_completed(stdout="out", stderr="err")):
+        with patch("pm2_mcp.server._run_pm2", return_value=_completed(stdout="out", stderr="err")):
             result = server.get_logs("svc-a", include_errors=False)
 
         assert result["stderr"] == ""
         assert result["stdout"] == "out"
 
+    def test_unknown_name_never_reaches_pm2(self, monkeypatch):
+        monkeypatch.setattr(server, "_find_service", lambda name: None)
+        with patch("pm2_mcp.server._run_pm2") as mock:
+            result = server.get_logs("missing-svc")
+        assert result == {"ok": False, "error": "service 'missing-svc' not found"}
+        mock.assert_not_called()
+
+    def test_jlist_failure_returns_error_dict(self, monkeypatch):
+        def boom(name):
+            raise RuntimeError("pm2 jlist failed")
+
+        monkeypatch.setattr(server, "_find_service", boom)
+        result = server.get_logs("svc-a")
+        assert result == {"ok": False, "error": "pm2 jlist failed"}
+
     def test_pm2_error_returns_error_dict(self):
-        with patch("server._run_pm2", side_effect=RuntimeError("pm2 logs failed")):
+        with patch("pm2_mcp.server._run_pm2", side_effect=RuntimeError("pm2 logs failed")):
             result = server.get_logs("missing-svc")
 
         assert result["ok"] is False
         assert "pm2 logs failed" in result["error"]
+
+
+@pytest.mark.parametrize("name", ["--help", "-h", "all", "0", "/svc/"])
+def test_get_logs_refuses_option_id_and_pattern_names(name):
+    """Driven through the real _find_service: none of these is a registered app name."""
+    with patch(
+        "pm2_mcp.server._run_pm2", return_value=_jlist_result(_make_process(name="svc-a"))
+    ) as mock:
+        result = server.get_logs(name)
+    assert result["ok"] is False
+    # Only the jlist lookup ran; `pm2 logs` never did.
+    mock.assert_called_once_with("jlist")
 
 
 # ---------------------------------------------------------------------------
@@ -223,14 +255,14 @@ class TestRestartService:
         proc = _make_process()
         jlist_result = _jlist_result(proc)
         restart_result = _completed()
-        with patch("server._run_pm2", side_effect=[jlist_result, restart_result]) as mock:
+        with patch("pm2_mcp.server._run_pm2", side_effect=[jlist_result, restart_result]) as mock:
             result = server.restart_service("svc-a")
 
         assert result == {"ok": True, "name": "svc-a"}
         mock.assert_any_call("restart", "svc-a")
 
     def test_unknown_service_returns_error_without_restart(self):
-        with patch("server._run_pm2", return_value=_jlist_result()) as mock:
+        with patch("pm2_mcp.server._run_pm2", return_value=_jlist_result()) as mock:
             result = server.restart_service("ghost")
 
         assert result["ok"] is False
@@ -246,7 +278,7 @@ class TestRestartService:
 
 class TestStopService:
     def test_unknown_service_returns_error_without_stop(self):
-        with patch("server._run_pm2", return_value=_jlist_result()) as mock:
+        with patch("pm2_mcp.server._run_pm2", return_value=_jlist_result()) as mock:
             result = server.stop_service("ghost")
 
         assert result["ok"] is False
@@ -256,7 +288,9 @@ class TestStopService:
 
     def test_known_service_calls_stop(self):
         proc = _make_process()
-        with patch("server._run_pm2", side_effect=[_jlist_result(proc), _completed()]) as mock:
+        with patch(
+            "pm2_mcp.server._run_pm2", side_effect=[_jlist_result(proc), _completed()]
+        ) as mock:
             result = server.stop_service("svc-a")
 
         assert result == {"ok": True, "name": "svc-a"}
@@ -271,14 +305,16 @@ class TestStopService:
 class TestStartService:
     def test_known_service_calls_start(self):
         proc = _make_process(status="stopped")
-        with patch("server._run_pm2", side_effect=[_jlist_result(proc), _completed()]) as mock:
+        with patch(
+            "pm2_mcp.server._run_pm2", side_effect=[_jlist_result(proc), _completed()]
+        ) as mock:
             result = server.start_service("svc-a")
 
         assert result == {"ok": True, "name": "svc-a"}
         mock.assert_any_call("start", "svc-a")
 
     def test_unknown_service_returns_error_without_start(self):
-        with patch("server._run_pm2", return_value=_jlist_result()) as mock:
+        with patch("pm2_mcp.server._run_pm2", return_value=_jlist_result()) as mock:
             result = server.start_service("ghost")
 
         assert result["ok"] is False
@@ -295,14 +331,16 @@ class TestStartService:
 class TestReloadService:
     def test_known_service_calls_reload(self):
         proc = _make_process()
-        with patch("server._run_pm2", side_effect=[_jlist_result(proc), _completed()]) as mock:
+        with patch(
+            "pm2_mcp.server._run_pm2", side_effect=[_jlist_result(proc), _completed()]
+        ) as mock:
             result = server.reload_service("svc-a")
 
         assert result == {"ok": True, "name": "svc-a"}
         mock.assert_any_call("reload", "svc-a")
 
     def test_unknown_service_returns_error_without_reload(self):
-        with patch("server._run_pm2", return_value=_jlist_result()) as mock:
+        with patch("pm2_mcp.server._run_pm2", return_value=_jlist_result()) as mock:
             result = server.reload_service("ghost")
 
         assert result["ok"] is False
@@ -318,14 +356,14 @@ class TestReloadService:
 
 class TestSave:
     def test_save_calls_pm2_save(self):
-        with patch("server._run_pm2", return_value=_completed()) as mock:
+        with patch("pm2_mcp.server._run_pm2", return_value=_completed()) as mock:
             result = server.save()
 
         assert result == {"ok": True}
         mock.assert_called_once_with("save")
 
     def test_save_error_returns_error_dict(self):
-        with patch("server._run_pm2", side_effect=RuntimeError("pm2 save failed")):
+        with patch("pm2_mcp.server._run_pm2", side_effect=RuntimeError("pm2 save failed")):
             result = server.save()
 
         assert result["ok"] is False
@@ -340,14 +378,16 @@ class TestSave:
 class TestFlushLogs:
     def test_known_service_calls_flush(self):
         proc = _make_process()
-        with patch("server._run_pm2", side_effect=[_jlist_result(proc), _completed()]) as mock:
+        with patch(
+            "pm2_mcp.server._run_pm2", side_effect=[_jlist_result(proc), _completed()]
+        ) as mock:
             result = server.flush_logs("svc-a")
 
         assert result == {"ok": True, "name": "svc-a"}
         mock.assert_any_call("flush", "svc-a")
 
     def test_unknown_service_returns_error_without_flush(self):
-        with patch("server._run_pm2", return_value=_jlist_result()) as mock:
+        with patch("pm2_mcp.server._run_pm2", return_value=_jlist_result()) as mock:
             result = server.flush_logs("ghost")
 
         assert result["ok"] is False
@@ -368,7 +408,7 @@ class TestGetStatus:
             _make_process(name="b", status="stopped"),
         ]
         with patch(
-            "server._run_pm2",
+            "pm2_mcp.server._run_pm2",
             side_effect=[
                 _completed(stdout="5.0.0\n"),  # pm2 --version
                 _completed(stdout=json.dumps(procs)),  # pm2 jlist
@@ -384,7 +424,7 @@ class TestGetStatus:
     def test_pm2_unavailable_returns_unknown_version(self):
         procs = []
         with patch(
-            "server._run_pm2",
+            "pm2_mcp.server._run_pm2",
             side_effect=[
                 RuntimeError("pm2 not found"),
                 _completed(stdout=json.dumps(procs)),
@@ -509,19 +549,23 @@ class TestGetServiceCreatedAtZero:
         """created_at=0 in PM2 env should map to None, not epoch string."""
         proc = _make_process()
         proc["pm2_env"]["created_at"] = 0
-        with patch("server._run_pm2", return_value=_jlist_result(proc)):
+        with patch("pm2_mcp.server._run_pm2", return_value=_jlist_result(proc)):
             result = server.get_service("svc-a")
         assert result["created_at"] is None
 
 
 class TestGetLogsGuards:
+    @pytest.fixture(autouse=True)
+    def registered(self, monkeypatch):
+        monkeypatch.setattr(server, "_find_service", lambda name: {"name": name})
+
     def test_lines_zero_clamped_to_one(self):
-        with patch("server._run_pm2", return_value=_completed(stdout="")) as mock:
+        with patch("pm2_mcp.server._run_pm2", return_value=_completed(stdout="")) as mock:
             server.get_logs("svc-a", lines=0)
         mock.assert_called_once_with("logs", "svc-a", "--nostream", "--lines", "1")
 
     def test_lines_negative_clamped_to_one(self):
-        with patch("server._run_pm2", return_value=_completed(stdout="")) as mock:
+        with patch("pm2_mcp.server._run_pm2", return_value=_completed(stdout="")) as mock:
             server.get_logs("svc-a", lines=-5)
         mock.assert_called_once_with("logs", "svc-a", "--nostream", "--lines", "1")
 
@@ -548,7 +592,7 @@ class TestWriteToolPm2Failure:
     def test_restart_service_reports_pm2_failure(self):
         proc = _make_process()
         with patch(
-            "server._run_pm2",
+            "pm2_mcp.server._run_pm2",
             side_effect=[
                 _jlist_result(proc),
                 RuntimeError("pm2 restart svc-a failed (rc=1): boom"),
@@ -563,7 +607,7 @@ class TestWriteToolPm2Failure:
     def test_stop_service_reports_pm2_failure(self):
         proc = _make_process()
         with patch(
-            "server._run_pm2",
+            "pm2_mcp.server._run_pm2",
             side_effect=[_jlist_result(proc), RuntimeError("pm2 stop svc-a failed (rc=1): boom")],
         ) as mock:
             result = server.stop_service("svc-a")
@@ -575,7 +619,7 @@ class TestWriteToolPm2Failure:
     def test_start_service_reports_pm2_failure(self):
         proc = _make_process(status="stopped")
         with patch(
-            "server._run_pm2",
+            "pm2_mcp.server._run_pm2",
             side_effect=[_jlist_result(proc), RuntimeError("pm2 start svc-a failed (rc=1): boom")],
         ) as mock:
             result = server.start_service("svc-a")
@@ -587,7 +631,7 @@ class TestWriteToolPm2Failure:
     def test_reload_service_reports_pm2_failure(self):
         proc = _make_process()
         with patch(
-            "server._run_pm2",
+            "pm2_mcp.server._run_pm2",
             side_effect=[_jlist_result(proc), RuntimeError("pm2 reload svc-a failed (rc=1): boom")],
         ) as mock:
             result = server.reload_service("svc-a")
@@ -599,7 +643,7 @@ class TestWriteToolPm2Failure:
     def test_flush_logs_reports_pm2_failure(self):
         proc = _make_process()
         with patch(
-            "server._run_pm2",
+            "pm2_mcp.server._run_pm2",
             side_effect=[_jlist_result(proc), RuntimeError("pm2 flush svc-a failed (rc=1): boom")],
         ) as mock:
             result = server.flush_logs("svc-a")
@@ -618,7 +662,7 @@ class TestGetStatusDegraded:
         two separate try/except blocks and covering one says nothing about the other.
         """
         with patch(
-            "server._run_pm2",
+            "pm2_mcp.server._run_pm2",
             side_effect=[
                 _completed(stdout="5.0.0\n"),
                 RuntimeError("pm2 jlist failed (rc=1): daemon unreachable"),
@@ -633,7 +677,7 @@ class TestGetStatusDegraded:
     def test_reports_unknown_version_and_empty_counts_when_pm2_is_absent(self):
         """Both calls fail — the degraded path must still return a well-formed dict."""
         with patch(
-            "server._run_pm2",
+            "pm2_mcp.server._run_pm2",
             side_effect=[
                 RuntimeError("pm2 --version failed"),
                 RuntimeError("pm2 jlist failed"),
@@ -885,33 +929,6 @@ class TestEnvAllowlist:
         assert "PM2_MCP_CANARY_ONE" in message.split(",")
 
 
-@pytest.fixture
-def restored_logger_state():
-    """Snapshot and restore every global on the `pm2_mcp` logger.
-
-    _configure_logging() mutates module-level state that outlives the test: it sets the
-    level, sets `propagate = False`, and attaches a handler. The propagate flag is the
-    dangerous one — pytest's caplog installs its handler on the ROOT logger, so
-    propagate False makes `caplog.text` come back EMPTY even under
-    `caplog.at_level(..., logger="pm2_mcp")`. Measured on pytest 9.1.1.
-
-    Without this fixture a single test calling _configure_logging() would silently
-    hollow out every caplog-based test that happened to run after it — they would still
-    pass their `assert x not in caplog.text` lines, because nothing is ever in
-    caplog.text. That is the same failure shape as vikunja#772 itself: an assertion that
-    holds for the wrong reason.
-    """
-    original_level = server._log.level
-    original_propagate = server._log.propagate
-    original_handlers = list(server._log.handlers)
-    try:
-        yield
-    finally:
-        server._log.setLevel(original_level)
-        server._log.propagate = original_propagate
-        server._log.handlers[:] = original_handlers
-
-
 class TestConfigureLogging:
     """vikunja#772 — the shadow log never reached disk in production.
 
@@ -1086,6 +1103,10 @@ class TestResolveBindRefusesNonLoopback:
             "example.com",
             "mcp.example.invalid",
             "",
+            # Scoped loopback: ipaddress calls these loopback, but no client's Host can
+            # match them (R2-01). Refused, not admitted and then answered 421.
+            "::1%lo",
+            "::1%25lo",
         ],
     )
     def test_non_loopback_host_is_refused(self, host, capsys):

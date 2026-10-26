@@ -1,8 +1,9 @@
 # Architecture
 
-`pm2-mcp` is a single-file FastMCP server that wraps the `pm2` CLI. It is deliberately small:
-one module, one subprocess helper, no persistent state, no database, no cache, and one
-dependency (`fastmcp`).
+`pm2-mcp` is a FastMCP server that wraps the `pm2` CLI. It is deliberately small: one module
+(`src/pm2_mcp/server.py`), one subprocess helper, no persistent state, no database, no cache,
+and one direct dependency (`fastmcp`; the others in `pyproject.toml` are minimum versions held
+on its transitives).
 
 The interesting part is not the structure — it is the **environment boundary**, because this
 server shells out to a tool that copies its caller's environment into long-lived daemons. That
@@ -17,6 +18,7 @@ flowchart LR
     agent["MCP client\n(Claude Code, scoped-mcp)"]
     subgraph proc["pm2-mcp process"]
         direction TB
+        guard["HostOriginGuard\nloopback Host only\nno Origin"]
         fastmcp["FastMCP\nstreamable-http\n127.0.0.1:8486/mcp"]
         tools["10 tool functions\n4 read · 6 write"]
         helpers["_find_service\n_parse_summary"]
@@ -25,7 +27,9 @@ flowchart LR
     cli["pm2 CLI\n(Node.js)"]
     daemon["PM2 daemon\n~42 processes\n~/.pm2/dump.pm2"]
 
-    agent -->|"JSON-RPC over HTTP"| fastmcp
+    agent -->|"JSON-RPC over HTTP"| guard
+    guard -->|"421 / 403 if refused"| agent
+    guard --> fastmcp
     fastmcp --> tools
     tools --> helpers
     helpers --> boundary
@@ -110,9 +114,10 @@ second one assert the pm2 verb was *attempted* rather than only checking the ret
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Import: python server.py
+    [*] --> Import: .venv/bin/pm2-mcp<br/>(pm2_mcp.server:main)
     Import --> Registered: FastMCP() constructed,<br/>@mcp.tool decorators run
-    Registered --> Serving: mcp.run(streamable-http)<br/>host/port from MCP_HOST/MCP_PORT<br/>(defaults 127.0.0.1:8486)
+    Registered --> Checked: main() — logging configured,<br/>PM2_MCP_ENV_MODE must be shadow|enforce,<br/>bind resolved argv > env > 127.0.0.1:8486,<br/>non-loopback refused
+    Checked --> Serving: mcp.run(streamable-http,<br/>middleware=[HostOriginGuard])
     Serving --> Serving: tool call → subprocess → response<br/>(no state retained between calls)
     Serving --> [*]: SIGTERM from PM2
 
@@ -188,8 +193,8 @@ without touching this file.
 - **No authentication.** Any caller that reaches port 8486 can stop or restart any PM2 process
   on the host. This is a deliberate localhost-only posture, documented rather than fixed —
   see `docs/threat-model.md`.
-- **No audit log.** A privileged tool that can stop any of ~42 processes currently emits no
-  record when it does. Acknowledged gap, not in scope for the Showcase promotion.
+- **No audit log.** A privileged tool that can stop any of ~35 processes currently emits no
+  record when it does. Acknowledged gap.
 - **No `delete` verb**, and no way to register a new process. `start_service` resumes an
   already-registered app.
 - **No caching or persistence.** Deliberate; see the lifecycle note above.

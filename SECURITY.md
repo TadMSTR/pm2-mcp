@@ -15,7 +15,11 @@ Include as much detail as possible: the affected component, steps to reproduce, 
 
 **In scope:**
 
-- Process name injection enabling unintended PM2 process operations (start/stop/delete)
+- Process name injection enabling unintended PM2 process operations
+  (restart/stop/start/reload/flush/save; there is no delete verb)
+- A request from a browser or other non-loopback `Host` reaching the tool surface
+  (the Host/Origin check, v0.5.0)
+- Environment variables reaching the `pm2` child that the active mode should withhold
 - Information disclosure through process list responses exposing environment variables or credential paths
 - Privilege escalation via unintended lifecycle operations on privileged PM2 processes
 - Dependency vulnerabilities with a plausible exploitation path in pm2-mcp's usage

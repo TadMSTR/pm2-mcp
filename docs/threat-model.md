@@ -20,6 +20,7 @@ It runs as an ordinary user, not root, and inherits exactly that user's authorit
 | Boundary | Who is trusted | Enforcement |
 |---|---|---|
 | The MCP port (`127.0.0.1:8486`) | **Everyone who can reach it** | None — no authentication |
+| A browser on this host → the port | Nobody | `HostOriginGuard`: loopback or bound-address `Host` only, any non-empty `Origin` refused (v0.5.0) |
 | Tool arguments → `pm2` argv | Nobody | `_find_service` allowlist + list-form `subprocess.run` |
 | This process's env → `pm2` child | Nothing | `_clean_env()` |
 | `pm2 jlist` output → tool response | n/a | `_parse_summary` field allowlist |
@@ -47,6 +48,23 @@ What limits it:
 That second point is the actual justification, and it has a limit worth naming: it holds for
 code running **as this user**. It does not hold for a lower-privileged local process, or for
 a container that can reach the host loopback.
+
+**A browser is the other local caller, and since v0.5.0 it is refused.** A web page cannot
+open a raw socket, but with DNS rebinding a page on an attacker's domain can re-point that
+name at `127.0.0.1` and then make same-origin requests to this port from the operator's own
+browser. The browser still sends the
+attacker's hostname in `Host`, so `HostOriginGuard` (mcp's `TransportSecurityMiddleware`,
+applied explicitly) refuses with 421 any `Host` that is not `127.0.0.1`, `localhost`,
+`[::1]` or the address the server bound, followed by `:` and a port. A request carrying a
+non-empty `Origin` gets 403: only browsers send one, and no browser is a client.
+`PM2_MCP_ALLOWED_HOSTS` can add exact `Host` values (an entry containing `*` refuses to
+start) and is unset by default. Refusals are logged by status only, never by header value.
+
+Two looser edges, stated so nobody reads more into "loopback only" than is there. mcp's
+port wildcard is a prefix match, `startswith("localhost:")`, so `localhost:8486.evil.example`
+also passes. And an empty `Origin:` header counts as absent. A browser can send neither: a
+URL port is digits, and browsers never send an empty Origin. Neither reopens DNS rebinding.
+A non-browser local caller could send both, but it can reach the port anyway (§1).
 
 Before v0.4.0 the first point read "binds `127.0.0.1` by default … without someone
 deliberately proxying it or changing `MCP_HOST`", and that was the weaker claim: a one-word
@@ -88,7 +106,17 @@ through.
 
 An allowlist (vikunja#610) is implemented and currently runs in **shadow mode**: it computes
 what it would keep, logs the names it would withhold for each pm2 command, and changes
-nothing. Set `PM2_MCP_ENV_MODE=enforce` to apply it.
+nothing. `PM2_MCP_ENV_MODE=enforce` applies it (or a reviewed change to the default in
+`server.py`); any other value refuses to start, so a typo cannot silently mean shadow.
+`get_status` reports the running mode.
+
+**Write verbs under enforce (vikunja#771, v0.5.0).** `tests/test_integration_pm2.py` drives
+restart, stop, start, reload, flush and save against a real pm2 6.0.14 and a private daemon,
+in both modes, with the variables pm2 sets on its children (`NODE_APP_INSTANCE`,
+`PM2_JSON_PROCESSING`, `PM2_USAGE`, and the IPC pair) present in the parent. Every verb
+succeeds and has its effect in both modes. A child `PATH` that cannot reach pm2 makes every
+verb fail, so the test can see a broken environment. Dropping `PATH` outright cannot be that
+control on forge: pm2 and node are in `/usr/bin`, which is the fallback search path.
 
 Measured on the live process before enforcing: 20 environment variables, of which 13 would be
 withheld and **none** is secret-shaped. So enforcement is not removing credentials that are
@@ -106,7 +134,7 @@ and nothing in the code prevents that.
 
 Not an injection surface, and the README's claim to that effect is accurate:
 
-- Every write tool calls `_find_service(name)` first, which requires the name to match an app
+- Every write tool, and since v0.5.0 `get_logs`, calls `_find_service(name)` first, which requires the name to match an app
   **already registered with PM2**. An unknown name returns `{"ok": false}` and `pm2` is never
   invoked with it. This is an allowlist, not sanitisation.
 - `subprocess.run` is always called with a list and never `shell=True`, so shell
@@ -135,8 +163,8 @@ log. pm2-mcp does not filter it.
 | Gap | Status |
 |---|---|
 | No authentication on the MCP port | Accepted, documented above |
-| `_clean_env` is a denylist, not an allowlist | Tracked — vikunja#610 |
-| No audit log of privileged actions | **Open.** A tool that can stop any of ~42 processes writes no record when it does. Reconstruction depends on PM2's own restart counters |
+| `_clean_env` is a denylist, not an allowlist | Allowlist in shadow mode; enforcing it is the decision tracked in vikunja#771 |
+| No audit log of privileged actions | **Open.** A tool that can stop any of ~35 processes writes no record when it does. Reconstruction depends on PM2's own restart counters |
 | Self-management | The server can restart itself; it has no `delete` verb, so a broken registration needs an operator |
 
 ## Out of scope
