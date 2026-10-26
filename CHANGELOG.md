@@ -21,6 +21,8 @@ docs/operations.md, "Upgrading".
   `fastmcp>=3.4.10,<4`, `mcp>=1.30,<2`, and floors on anyio, certifi, cryptography, joserfc,
   opentelemetry-api, PyJWT, pydantic-settings, python-multipart, starlette and urllib3.
   `pip-audit` over the locked runtime and dev sets reports no known vulnerabilities.
+- **`get_logs` accepts only a registered service name**, like the write verbs. `pm2 logs`
+  takes an id, a namespace, `all` or an option in the same argument position.
 - **An unrecognised `PM2_MCP_ENV_MODE` refuses to start.** Any value other than `shadow` or
   `enforce` used to run shadow silently.
 

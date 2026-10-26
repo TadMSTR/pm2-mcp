@@ -127,7 +127,7 @@ and nothing in the code prevents that.
 
 Not an injection surface, and the README's claim to that effect is accurate:
 
-- Every write tool calls `_find_service(name)` first, which requires the name to match an app
+- Every write tool, and since v0.5.0 `get_logs`, calls `_find_service(name)` first, which requires the name to match an app
   **already registered with PM2**. An unknown name returns `{"ok": false}` and `pm2` is never
   invoked with it. This is an allowlist, not sanitisation.
 - `subprocess.run` is always called with a list and never `shell=True`, so shell

@@ -176,6 +176,11 @@ class TestGetService:
 
 
 class TestGetLogs:
+    @pytest.fixture(autouse=True)
+    def registered(self, monkeypatch):
+        """get_logs checks the name against the live process list first."""
+        monkeypatch.setattr(server, "_find_service", lambda name: {"name": name})
+
     def test_returns_stdout_and_stderr(self):
         stub = _completed(stdout="line1\nline2\n", stderr="err\n")
         with patch("pm2_mcp.server._run_pm2", return_value=stub):
@@ -205,12 +210,39 @@ class TestGetLogs:
         assert result["stderr"] == ""
         assert result["stdout"] == "out"
 
+    def test_unknown_name_never_reaches_pm2(self, monkeypatch):
+        monkeypatch.setattr(server, "_find_service", lambda name: None)
+        with patch("pm2_mcp.server._run_pm2") as mock:
+            result = server.get_logs("missing-svc")
+        assert result == {"ok": False, "error": "service 'missing-svc' not found"}
+        mock.assert_not_called()
+
+    def test_jlist_failure_returns_error_dict(self, monkeypatch):
+        def boom(name):
+            raise RuntimeError("pm2 jlist failed")
+
+        monkeypatch.setattr(server, "_find_service", boom)
+        result = server.get_logs("svc-a")
+        assert result == {"ok": False, "error": "pm2 jlist failed"}
+
     def test_pm2_error_returns_error_dict(self):
         with patch("pm2_mcp.server._run_pm2", side_effect=RuntimeError("pm2 logs failed")):
             result = server.get_logs("missing-svc")
 
         assert result["ok"] is False
         assert "pm2 logs failed" in result["error"]
+
+
+@pytest.mark.parametrize("name", ["--help", "-h", "all", "0", "/svc/"])
+def test_get_logs_refuses_option_id_and_pattern_names(name):
+    """Driven through the real _find_service: none of these is a registered app name."""
+    with patch(
+        "pm2_mcp.server._run_pm2", return_value=_jlist_result(_make_process(name="svc-a"))
+    ) as mock:
+        result = server.get_logs(name)
+    assert result["ok"] is False
+    # Only the jlist lookup ran; `pm2 logs` never did.
+    mock.assert_called_once_with("jlist")
 
 
 # ---------------------------------------------------------------------------
@@ -523,6 +555,10 @@ class TestGetServiceCreatedAtZero:
 
 
 class TestGetLogsGuards:
+    @pytest.fixture(autouse=True)
+    def registered(self, monkeypatch):
+        monkeypatch.setattr(server, "_find_service", lambda name: {"name": name})
+
     def test_lines_zero_clamped_to_one(self):
         with patch("pm2_mcp.server._run_pm2", return_value=_completed(stdout="")) as mock:
             server.get_logs("svc-a", lines=0)

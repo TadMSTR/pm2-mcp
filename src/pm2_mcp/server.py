@@ -579,6 +579,12 @@ def get_logs(name: str, lines: int = 50, include_errors: bool = True) -> dict:
         include_errors: Whether to include stderr log (default True).
     """
     try:
+        # The same allowlist as the write verbs: the name must be a registered app. pm2
+        # parses `logs [options] [id|name|namespace]`, so without this a name starting with
+        # `-` is read as an option, and an id, a namespace or `all` reads other apps' logs.
+        # The list form of subprocess.run stops shell injection, not argv option injection.
+        if _find_service(name) is None:
+            return {"ok": False, "error": f"service '{name}' not found"}
         # max(1, ...) — PM2 rejects --lines 0 with an error
         result = _run_pm2(
             "logs", name, "--nostream", "--lines", str(max(1, min(lines, _MAX_LOG_LINES)))

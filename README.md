@@ -28,7 +28,7 @@ flowchart LR
 |------|-------------|
 | `list_services` | List all PM2 services. Optional `status_filter`: `"online"`, `"stopped"`, or `"errored"`. |
 | `get_service` | Full detail for one service by name — script path, cwd, args, log file paths, created_at, plus all summary fields. |
-| `get_logs` | Tail recent log output. `lines` defaults to 50 (max 500); `include_errors` defaults to `true`. |
+| `get_logs` | Tail recent log output for one registered service. `lines` defaults to 50 (max 500); `include_errors` defaults to `true`. |
 | `get_status` | Server metadata and PM2 health summary — configured host/port, PM2 version, service counts by status. |
 
 ### Write
@@ -209,7 +209,7 @@ The server binds loopback only, and **that is enforced in code rather than defau
 
 A loopback bind keeps other machines out but not a browser on the same host, which DNS rebinding can point at `127.0.0.1`. So every HTTP request is also checked for its `Host` and `Origin` headers (since v0.5.0): a `Host` that is not `127.0.0.1`, `localhost` or `[::1]` (on any port) gets **421**, and a request carrying any `Origin` at all gets **403**, because only browsers send one and no browser is a client. `PM2_MCP_ALLOWED_HOSTS` adds exact extra `Host` values; it is unset by default and nothing on forge needs it.
 
-The write tools (`restart_service`, `stop_service`, `start_service`, `reload_service`, `flush_logs`) validate service names against the live PM2 process list before acting. An unrecognized name returns `{ok: false, error: "service '...' not found"}` without touching PM2.
+The write tools (`restart_service`, `stop_service`, `start_service`, `reload_service`, `flush_logs`) and `get_logs` validate service names against the live PM2 process list before acting. An unrecognized name returns `{ok: false, error: "service '...' not found"}` without touching PM2.
 
 Before invoking the `pm2` CLI the server scrubs its own environment. Today that means a denylist: PM2's IPC variables, and anything matching the `CLAUDE` prefix. `pm2 start` and `pm2 restart --update-env` copy the caller's whole environment into the target app and `pm2 save` persists it, so this is the difference between a credential staying in memory and being written to disk.
 
