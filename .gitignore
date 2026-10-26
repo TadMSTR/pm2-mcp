@@ -10,6 +10,9 @@ __pycache__/
 !.env.example
 core.*
 *.core
+# Key material (repo standard B6). Nothing in this repo needs a key file.
+*.key
+*.pem
 .venv/
 .coverage
 coverage.xml
