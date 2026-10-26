@@ -97,6 +97,20 @@ fi
 # asserting argparse's --help output — noise that would teach the next person the gate
 # is something to work around. If _resolve_bind ever grows behaviour that is not
 # delegated to _is_loopback, revisit this and re-measure.
+# _transport_security_settings and HostOriginGuard (v0.5.0) are NOT in FUNCS either, for
+# the same reason as _resolve_bind: their survivors are equivalent, so a zero-survivor rule
+# could only go green by asserting nothing. MEASURED 2026-10-25: 78 mutants, 75 killed. The
+# three survivors, each checked by diff:
+#     validate_request(..., is_post=False) -> is_post=None      None is falsy, same branch
+#     validate_request(..., is_post=False) -> argument dropped  False is the default
+#     refusal(scope, receive, send)        -> receive=None      a Response never reads it
+# The behavioural ones are killed: every allowed-host entry, the Origin refusal, the
+# websocket close, the scope-type filter, and the mcp logger silencing.
+#
+# LOCAL RUNS: delete mutants/ first. mutmut caches its test-to-function stats there, and a
+# stale cache runs a new test against none of the mutants it covers, so killed mutants are
+# reported as survivors (measured 2026-10-25: the logger-silencing kills only appeared after
+# `rm -rf mutants`). CI always starts from a fresh checkout.
 declare -A MIN_MUTANTS=( [clean_env]=25 [allowlist_env]=1 [denylist_env]=4 [run_pm2]=22 [is_loopback]=6 )
 
 for fn in clean_env allowlist_env denylist_env run_pm2 is_loopback; do

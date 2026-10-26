@@ -9,10 +9,12 @@ import json
 import logging
 import os
 import subprocess
-import sys
 import time
 
 from fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecurityMiddleware, TransportSecuritySettings
+from starlette.middleware import Middleware
+from starlette.requests import HTTPConnection
 
 mcp = FastMCP(
     name="pm2",
@@ -269,6 +271,88 @@ def _resolve_bind(argv: list | None = None, env: dict | None = None) -> tuple:
             f"(127.0.0.0/8, ::1 or localhost). See docs/threat-model.md. vikunja#770."
         )
     return host, port
+
+
+# ---------------------------------------------------------------------------
+# Host / Origin check (DNS-rebinding protection)
+# ---------------------------------------------------------------------------
+# The loopback-only bind above keeps other machines out. It does not keep out a browser
+# on this host: a page whose hostname an attacker re-points at 127.0.0.1 is, to the
+# browser, same-origin with this port, and could drive the write verbs. The browser still
+# sends the attacker's hostname in Host, so refusing any Host that is not a loopback name
+# closes it. homelab-ops-mcp v0.5.0 is the precedent.
+#
+# Any port, not just the bind port. A client that arrives through a port forward sends
+# the forward's local port. The hostname is what an attacker controls.
+#
+# mcp ships this check (TransportSecurityMiddleware), but FastMCP builds its transport
+# with it switched off, and FastMCP 3.4's own guard is off by default too. So mcp's check
+# is applied explicitly, as a Starlette middleware handed to mcp.run(middleware=...): it
+# does not depend on a FastMCP default, and tests/test_host_origin.py pins it against the
+# real app.
+_LOOPBACK_NAMES = ("127.0.0.1", "localhost", "[::1]")
+_ALLOWED_HOSTS_ENV_VAR = "PM2_MCP_ALLOWED_HOSTS"
+
+
+def _transport_security_settings(env: dict | None = None) -> TransportSecuritySettings:
+    """Loopback names on any port, plus exact Host values from PM2_MCP_ALLOWED_HOSTS.
+
+    The variable is comma-separated and unset by default. Its entries are matched
+    exactly, port included, so `name:8486` admits that name on that port only.
+
+    No Origin is allowed at all. No browser is a legitimate client and only browsers
+    send Origin, so a request carrying one is refused (403) whatever it names. Allowing
+    loopback origins would trust every web app served on this host. A request without
+    the header, which is every MCP client, passes.
+    """
+    env = os.environ if env is None else env
+    hosts = [f"{name}:*" for name in _LOOPBACK_NAMES]
+    hosts += [h.strip() for h in env.get(_ALLOWED_HOSTS_ENV_VAR, "").split(",") if h.strip()]
+    return TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=hosts,
+        allowed_origins=[],
+    )
+
+
+class HostOriginGuard:
+    """ASGI middleware: refuse a request whose Host or Origin is not allowed.
+
+    Refused with 421 (Host) or 403 (Origin) by mcp's own check. The header values are
+    never logged: they are caller-controlled and unbounded.
+    """
+
+    def __init__(self, app, settings: TransportSecuritySettings):
+        self.app = app
+        self.check = TransportSecurityMiddleware(settings)
+        # mcp logs each refusal as f"Invalid Host header: {host}", the raw caller-supplied
+        # value. The refusal is logged below without it.
+        logging.getLogger("mcp.server.transport_security").setLevel(logging.ERROR)
+
+    async def __call__(self, scope, receive, send):
+        # WebSocket too: no route takes one today, and a later one must not arrive
+        # unguarded.
+        if scope["type"] in ("http", "websocket"):
+            # is_post=False: Content-Type is the MCP transport's own check. Only headers
+            # are read, so an HTTPConnection serves both scope types.
+            refusal = await self.check.validate_request(HTTPConnection(scope), is_post=False)
+            if refusal is not None:
+                _log.warning(
+                    "http request refused: status=%d scope=%s",
+                    refusal.status_code,
+                    scope["type"],
+                )
+                if scope["type"] == "websocket":
+                    # Closing before accept makes the server answer the upgrade with 403.
+                    await send({"type": "websocket.close", "code": 1008})
+                else:
+                    await refusal(scope, receive, send)
+                return
+        await self.app(scope, receive, send)
+
+
+def _http_middleware() -> list[Middleware]:
+    return [Middleware(HostOriginGuard, settings=_transport_security_settings())]
 
 
 # ---------------------------------------------------------------------------
@@ -633,11 +717,20 @@ def get_status() -> dict:
 # Entry point
 # ---------------------------------------------------------------------------
 
-if __name__ == "__main__":
-    # Deliberately thin: everything here is coverage-excluded and unreachable from a
-    # test, so both the logging setup and the bind resolution live in module-level
-    # functions above that the suite can actually exercise. vikunja#772 is what happens
-    # when startup-only logic has no test that can reach it.
+
+def main(argv: list | None = None) -> None:
+    """Console entry point: configure logging, resolve the bind, serve streamable-http.
+
+    Thin on purpose. The logging setup, the bind resolution and the middleware list are
+    module-level functions the suite exercises directly. vikunja#772 is what happens when
+    startup-only logic has no test that can reach it. A test drives this function too,
+    with mcp.run replaced, to pin that the Host/Origin guard is actually handed over.
+    """
     _configure_logging()
-    _host, _port = _resolve_bind(sys.argv[1:])
-    mcp.run(transport="streamable-http", host=_host, port=_port)
+    # argv None makes argparse read sys.argv[1:] itself.
+    host, port = _resolve_bind(argv)
+    mcp.run(transport="streamable-http", host=host, port=port, middleware=_http_middleware())
+
+
+if __name__ == "__main__":
+    main()
