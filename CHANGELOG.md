@@ -2,6 +2,66 @@
 
 All notable changes to pm2-mcp are documented here.
 
+## [0.5.0] — Unreleased
+
+**Deploy note: the launch path changes.** The PM2 app now runs the `pm2-mcp` console entry
+point from the venv, not `python3 server.py` from the checkout. Reinstall from `uv.lock`
+(`uv sync --frozen --no-dev --no-editable`), then `pm2 delete pm2-mcp` and
+`pm2 start ecosystem.config.js --only pm2-mcp` from a clean shell, and `pm2 save`. See
+docs/operations.md, "Upgrading".
+
+### Security
+
+- **Host/Origin check on the HTTP app.** `HostOriginGuard` applies mcp's
+  `TransportSecurityMiddleware`: a `Host` other than `127.0.0.1`, `localhost` or `[::1]` (any
+  port) gets 421, any request carrying an `Origin` gets 403, and a websocket is closed with
+  1008. `PM2_MCP_ALLOWED_HOSTS` adds exact `Host` values; it is unset by default. Refusals are
+  logged by status, never by header value.
+- **Dependency minimums raised**, each with the advisory it closes in `pyproject.toml`:
+  `fastmcp>=3.4.10,<4`, `mcp>=1.30,<2`, and floors on anyio, certifi, cryptography, joserfc,
+  opentelemetry-api, PyJWT, pydantic-settings, python-multipart, starlette and urllib3.
+  `pip-audit` over the locked runtime and dev sets reports no known vulnerabilities.
+- **An unrecognised `PM2_MCP_ENV_MODE` refuses to start.** Any value other than `shadow` or
+  `enforce` used to run shadow silently.
+
+### Added
+
+- `uv.lock`. CI installs every job from it (`uv sync --frozen`), checks `uv lock --check`,
+  audits the locked runtime and dev sets, and runs a gating job against the newest versions
+  the ranges allow (also weekly).
+- **Write verbs tested against a real pm2** (vikunja#771). `tests/test_integration_pm2.py`
+  (`pytest -m integration`) drives restart, stop, start, reload, flush and save through the
+  server's functions against a private pm2 daemon, in shadow and enforce mode, and checks each
+  one's effect. A negative control proves a broken child environment is detected. A CI job
+  runs it with pm2 6.0.14. `PM2_MCP_ENV_MODE` still defaults to shadow.
+- `get_status` reports `env_mode`.
+- Secret scanning: `secret-scan.yml` (gitleaks 8.30.1 pinned by version and digest, PR/push
+  gate, weekly full-history scan) and a planted-secret self-test.
+- CodeQL and OSSF Scorecard workflows, `CODEOWNERS`, and Dependabot for `uv.lock` and the
+  action pins.
+
+### Changed
+
+- **`src/` layout**: `server.py` is now `src/pm2_mcp/server.py`, with a `pm2-mcp` console
+  entry point (`pm2_mcp.server:main`). `ecosystem.config.js` runs it.
+- `requirements.txt` and `requirements-dev.txt` are removed; dev tools are the `dev` extra.
+- `requires-python` is `>=3.11`, the versions CI tests.
+- CI's build job installs the wheel with the locked runtime set, imports `pm2_mcp` from it
+  outside the tree, runs the entry point, and requires it to refuse a non-loopback bind.
+- Workflows carry top-level `permissions: contents: read`; actions moved to current pins;
+  `release.yml` no longer persists the checkout token.
+
+### Fixed
+
+- `get_status` reported `MCP_HOST`/`MCP_PORT` from the environment rather than the bind in
+  use, so with `--host`/`--port` passed (as `ecosystem.config.js` does) it could report a
+  port the server was not listening on.
+- The comment on `_ENV_MODE` said the mode was not read from the environment; it is.
+- Mutation gate: the survivor check is no longer anchored on the module path, which the
+  `src/` move changed. An anchored pattern left behind by such a move matches nothing and
+  passes with survivors present. Mutant counts are unchanged (`_clean_env` 25,
+  `_allowlist_env` 1, `_denylist_env` 4, `_run_pm2` 22, `_is_loopback` 6).
+
 ## [0.4.0] — 2026-09-10
 
 ### Added

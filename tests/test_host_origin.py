@@ -4,11 +4,12 @@ These drive the real Starlette app FastMCP builds, with the middleware main() ha
 mcp.run, rather than calling the guard in isolation, so a guard that is defined but never
 wired in fails here. The request is MCP `initialize`, which mutates nothing.
 
-Proven red first: against d7cba00 (v0.4.0, no guard) the foreign-Host and foreign-Origin
-cases returned 200 and an MCP session.
+The refusal cases were run red first, against the same app built without the middleware,
+so none of them can pass vacuously.
 """
 
 import asyncio
+import io
 import logging
 import sys
 
@@ -224,3 +225,75 @@ def test_main_reads_sys_argv_when_not_given(monkeypatch, restored_logger_state):
     monkeypatch.setattr(sys, "argv", ["pm2-mcp", "--port", "9999"])
     server.main()
     assert seen["port"] == 9999
+
+
+@pytest.mark.parametrize("mode", ["enforced", "on", "", "Enforce!"])
+def test_main_refuses_an_unknown_env_mode(monkeypatch, restored_logger_state, mode):
+    """A typo of "enforce" must not quietly run shadow (v0.5.0 review)."""
+    ran = []
+    monkeypatch.setattr(server.mcp, "run", lambda **kw: ran.append(kw))
+    monkeypatch.setattr(server, "_ENV_MODE", mode)
+    with pytest.raises(SystemExit, match="refusing to start: PM2_MCP_ENV_MODE"):
+        server.main([])
+    assert ran == []
+
+
+@pytest.mark.parametrize("mode", ["shadow", "enforce"])
+def test_main_starts_in_either_known_mode(monkeypatch, restored_logger_state, mode):
+    ran = []
+    monkeypatch.setattr(server.mcp, "run", lambda **kw: ran.append(kw))
+    monkeypatch.setattr(server, "_ENV_MODE", mode)
+    server.main([])
+    assert len(ran) == 1
+
+
+def test_get_status_reports_the_bind_main_used(monkeypatch, restored_logger_state):
+    """--port wins over MCP_PORT, so get_status must report the flag, not the variable."""
+    monkeypatch.setattr(server, "_BIND", None)
+    monkeypatch.setattr(server.mcp, "run", lambda **kw: None)
+    monkeypatch.setenv("MCP_PORT", "8486")
+    server.main(["--host", "127.0.0.2", "--port", "9123"])
+    monkeypatch.setattr(server, "_run_pm2", lambda *a: (_ for _ in ()).throw(RuntimeError("x")))
+    status = server.get_status()
+    assert (status["host"], status["port"]) == ("127.0.0.2", 9123)
+
+
+@pytest.mark.parametrize("mode", ["shadow", "enforce"])
+def test_get_status_reports_the_env_mode(monkeypatch, mode):
+    monkeypatch.setattr(server, "_ENV_MODE", mode)
+    monkeypatch.setattr(server, "_run_pm2", lambda *a: (_ for _ in ()).throw(RuntimeError("x")))
+    assert server.get_status()["env_mode"] == mode
+
+
+def test_get_status_without_main_reports_the_environment(monkeypatch):
+    monkeypatch.setenv("MCP_HOST", "127.0.0.9")
+    monkeypatch.setenv("MCP_PORT", "8999")
+    monkeypatch.setattr(server, "_run_pm2", lambda *a: (_ for _ in ()).throw(RuntimeError("x")))
+    status = server.get_status()
+    assert (status["host"], status["port"]) == ("127.0.0.9", 8999)
+
+
+def test_main_logs_the_bind_and_mode_it_starts_with(monkeypatch, restored_logger_state):
+    """The startup line is how an operator confirms the mode after a deploy.
+
+    Captured with a handler on pm2_mcp itself: main() sets propagate False, so caplog,
+    which listens on the root logger, would see nothing.
+    """
+    monkeypatch.setattr(server.mcp, "run", lambda **kw: None)
+    monkeypatch.setattr(server, "_ENV_MODE", "enforce")
+    stream = io.StringIO()
+    server._log.addHandler(logging.StreamHandler(stream))
+    server.main(["--port", "8486"])
+    assert "starting on 127.0.0.1:8486, env-allowlist mode enforce\n" in stream.getvalue()
+
+
+def test_unknown_env_mode_message_names_the_value_and_the_choices(
+    monkeypatch, restored_logger_state
+):
+    monkeypatch.setattr(server.mcp, "run", lambda **kw: None)
+    monkeypatch.setattr(server, "_ENV_MODE", "x" * 40)
+    with pytest.raises(SystemExit) as raised:
+        server.main([])
+    message = str(raised.value)
+    # Bounded: the value is caller-controlled, so at most 32 characters are echoed.
+    assert f"PM2_MCP_ENV_MODE={'x' * 32!r} is not one of shadow, enforce." in message

@@ -1,16 +1,20 @@
 # Contributing
 
-Thanks for looking. This is a small single-file server; most changes are small too.
+Thanks for looking. This is a small server, one module; most changes are small too.
 
 ## Setup
 
 ```bash
-python -m venv .venv
-.venv/bin/pip install -r requirements.txt -r requirements-dev.txt
+uv sync --frozen --extra dev     # the locked set CI uses
 .venv/bin/pre-commit install     # optional, mirrors the CI lint job
 ```
 
-No PM2 installation is needed to develop or test — every test mocks `_run_pm2`.
+Dependencies live in `pyproject.toml` and are locked in `uv.lock`. After changing one, run
+`uv lock` and commit both files; CI's `uv lock --check` fails a stale lock.
+
+No PM2 installation is needed for the default test run, which mocks `_run_pm2`. The
+integration tests (`-m integration`) need pm2 on `PATH`: they start a private daemon in a
+temporary `PM2_HOME` and refuse to run any pm2 command outside it.
 
 ## The loop
 
@@ -28,8 +32,11 @@ change adds a line, it needs a test, or the run goes red locally before it ever 
 These two functions are the trust boundary. Run the mutation gate as well:
 
 ```bash
-MUTMUT=.venv/bin/mutmut ./scripts/mutation-gate.sh
+rm -rf mutants && PATH="$PWD/.venv/bin:$PATH" ./scripts/mutation-gate.sh
 ```
+
+Delete `mutants/` first: mutmut caches which tests cover which function there, and a stale
+cache reports mutants a new test kills as survivors.
 
 It requires **zero surviving mutants** in those two functions, and separately requires that
 the number of mutants generated for each has not dropped below a recorded floor. Read the
@@ -78,9 +85,12 @@ reads as thorough. Three tests here were written that way, and every surviving m
 
 ## Pull requests
 
-Branch, don't commit to `main`. Update `CHANGELOG.md` under `[Unreleased]`. CI runs lint,
-tests on Python 3.11/3.12/3.13, the mutation gate, `pip-audit --strict`, and a build job that
-installs the wheel into a clean venv and imports from *that* rather than from the checkout.
+Branch, don't commit to `main`. Update `CHANGELOG.md` under `[Unreleased]`. CI installs
+from `uv.lock` and runs lint, tests on Python 3.11/3.12/3.13, the mutation gate, the real-pm2
+integration tests, a test against the newest versions `pyproject.toml` allows, `pip-audit
+--strict` over the locked runtime and dev sets, and a build job that installs the wheel into
+a clean venv and imports from *that* rather than from the checkout. `secret-scan.yml` and
+`codeql.yml` run alongside.
 
 That last job exists for a reason worth knowing: the package was unbuildable for two
 releases, and CI stayed green the whole time because its smoke test imported `server` from
@@ -88,7 +98,7 @@ the source tree. If you change anything in `[build-system]` or `[tool.setuptools
 locally and look inside the wheel:
 
 ```bash
-python -m build
+uv build
 python -c "import zipfile,glob; print(zipfile.ZipFile(glob.glob('dist/*.whl')[0]).namelist())"
 ```
 

@@ -6,18 +6,28 @@ Running, checking and recovering `pm2-mcp`.
 
 ## Deploying
 
-The server runs as a PM2 app defined by the repository's own `ecosystem.config.js`:
+The server runs as a PM2 app defined by the repository's own `ecosystem.config.js`, which
+runs the venv's `pm2-mcp` entry point. Install the package into that venv from the lock,
+non-editable, first: the running code is then the installed package, not the checkout.
 
 ```bash
+uv sync --frozen --no-dev --no-editable
+uv pip freeze -q -p .venv | grep -v '^pm2-mcp ' \
+  | uvx -q --from pip-audit==2.10.1 pip-audit --strict -r /dev/stdin --no-deps --disable-pip
 pm2 start ecosystem.config.js --only pm2-mcp
 pm2 save
 ```
 
+The audit line checks what is actually installed, which is the set that runs. CI audits
+the lock; this checks that the venv matches it. The project's own line is filtered out
+because it is a `file://` requirement, which `--strict` refuses (it is not on PyPI). The venv
+has no `pip`, so `uv pip freeze` is the way to read it.
+
 Read the comment block in that file before editing it. Two things there are load-bearing:
 
 - **`env: {}` is deliberate.** It asserts that the app requires nothing from the environment,
-  which is true — the only two variables the code reads are `MCP_HOST` and `MCP_PORT`, and
-  both have defaults. Do not add a shared-secrets loader: PM2 would write every key into
+  which is true — the variables the code reads (`MCP_HOST`, `MCP_PORT`,
+  `PM2_MCP_ALLOWED_HOSTS`, `PM2_MCP_ENV_MODE`) all have safe defaults when unset. Do not add a shared-secrets loader: PM2 would write every key into
   `~/.pm2/dump.pm2` at the next `pm2 save`.
 - **`env: {}` does not scrub inheritance.** PM2 passes the parent environment through
   regardless. Starting the app from an interactive shell that has sourced a secrets file
@@ -122,15 +132,30 @@ Confirm it is actually listening:
 ss -tlnp | grep 8486        # expect 127.0.0.1:8486, and nothing on 0.0.0.0
 ```
 
-A bind on `0.0.0.0` means `MCP_HOST` has been set somewhere. That is a security problem, not
-a configuration preference — see [threat-model.md](threat-model.md) §1.
+A bind on `0.0.0.0` cannot happen through this code: a non-loopback host refuses to start. If
+`ss` shows one, something other than this server holds the port. See
+[threat-model.md](threat-model.md) §1.
+
+Then check the Host/Origin guard over the wire (MCP `initialize` changes nothing):
+
+```bash
+B='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"check","version":"0"}}}'
+for h in localhost:8486 evil.example:8486; do
+  curl -s -o /dev/null -w "$h %{http_code}\n" -H 'content-type: application/json' \
+    -H 'accept: application/json, text/event-stream' -H "Host: $h" -d "$B" http://127.0.0.1:8486/mcp
+done
+# expect: localhost:8486 200, evil.example:8486 421
+```
 
 ### Verifying a deploy actually took
 
-"Shipped" and "running" have diverged in this repo's history, so compare rather than assume:
+"Shipped" and "running" have diverged in this repo's history, so compare rather than assume.
+Since v0.5.0 the running code is the package installed in `.venv`, so compare against that,
+not the checkout:
 
 ```bash
-stat -c '%y' server.py
+.venv/bin/python -c "import importlib.metadata as m; print(m.version('pm2-mcp'))"
+stat -c '%y' .venv/lib/python3*/site-packages/pm2_mcp/server.py
 pm2 jlist | python3 -c "
 import json,sys,datetime
 for a in json.load(sys.stdin):
@@ -138,20 +163,22 @@ for a in json.load(sys.stdin):
         print(datetime.datetime.fromtimestamp(a['pm2_env']['pm_uptime']/1000))"
 ```
 
-**The restart timestamp must be later than the file mtime.** If it isn't, the process is
-still running the old code no matter what the repository says.
+**The restart timestamp must be later than the installed file's mtime.** If it isn't, the
+process is still running the old code no matter what the repository says. And the installed
+version must be the one you meant to deploy: a `git pull` without a reinstall changes the
+checkout and nothing else.
 
 **One false positive to know about, because it has already happened once.** `mtime` cannot
-tell a code change from a comment change. A docs-only commit that touches `server.py` — say,
-correcting a `SECURITY[accepted]` comment — rewrites the mtime and makes this check report a
-stale deploy even though the running process is functionally identical to `HEAD`.
+tell a code change from a comment change. A reinstall after a docs-only commit that touched
+`server.py` — say, correcting a `SECURITY[accepted]` comment — rewrites the mtime and makes
+this check report a stale deploy even though the running process is functionally identical.
 
 Before scheduling a restart on the strength of this check alone, confirm there is an actual
 behavioural difference:
 
 ```bash
 # What changed in server.py since the process started, ignoring comments and blank lines?
-git diff <sha-deployed>..HEAD -- server.py \
+git diff <sha-deployed>..HEAD -- src/pm2_mcp/server.py \
   | grep '^[+-]' | grep -vE '^(\+\+\+|---)' | grep -vE '^[+-]\s*(#|$)'
 ```
 
@@ -197,22 +224,26 @@ environment rather than the command, so it would be identical on every call and 
 nothing about which callers break.
 
 **Before enforcing, read these lines and check nothing the `pm2` CLI needs is on them.**
-Measured on this host, 13 variables would be withheld and none is required: `pm2 jlist`,
-`pm2 --version` and `pm2 logs` were each verified working with only the seven allowlisted
-variables present. `PM2_JSON_PROCESSING` and `PM2_USAGE` appear in the withheld list and are
-the two worth watching, since pm2 sets them itself.
+Measured on this host, `pm2 jlist`, `pm2 --version` and `pm2 logs` were each verified working
+with only the allowlisted variables present. Since v0.5.0 the write verbs are covered too:
+`tests/test_integration_pm2.py` runs restart, stop, start, reload, flush and save against a
+real pm2 6.0.14 under both modes, with `PM2_JSON_PROCESSING`, `PM2_USAGE`,
+`NODE_APP_INSTANCE` and the IPC pair in the parent, and each verb works and takes effect
+(vikunja#771).
 
-To enforce, change the `_ENV_MODE` default in `server.py` and redeploy. It is deliberately
-**not** wired through `ecosystem.config.js`'s `env` block — that block is empty on purpose,
-and flipping a security posture should be a reviewable code diff rather than an environment
-variable on a service whose whole declaration says it needs none.
+The mode comes from `PM2_MCP_ENV_MODE`, read once at startup: unset means `shadow`,
+`enforce` enforces, and **any other value refuses to start**. It can be flipped by setting
+that variable or by a reviewed change to the `_ENV_MODE` default in `src/pm2_mcp/server.py`;
+either way it needs a redeploy. `ecosystem.config.js`'s `env` block is empty on purpose, so
+the variable would be its first entry. `get_status` reports the running mode. The flip
+itself is an operator decision, not something to do as part of another change.
 
 ## Recovery
 
 | Symptom | What to do |
 |---|---|
 | Tools time out, process `online` | `pm2 restart pm2-mcp`, then re-check the bind with `ss` |
-| Crash loop (`restart_time` climbing) | `pm2 logs pm2-mcp --nostream --lines 100`. Usually the venv interpreter path in `ecosystem.config.js` no longer exists |
+| Crash loop (`restart_time` climbing) | `pm2 logs pm2-mcp --nostream --lines 100`. Usually `.venv/bin/pm2-mcp` does not exist (the venv was not reinstalled, or holds an editable install from before v0.5.0), or `PM2_MCP_ENV_MODE` holds an unrecognised value |
 | Port 8486 held by something else | `ss -tlnp \| grep 8486`. The app will crash-loop until the port is free |
 | Bad PM2 registration (wrong args, wrong env) | Needs `pm2 delete pm2-mcp` then `pm2 start ecosystem.config.js --only pm2-mcp`. **This server cannot do it** — there is no `delete` verb, deliberately |
 
@@ -225,11 +256,19 @@ force, because that is the moment a fresh environment is captured.
 
 ```bash
 git -C /path/to/pm2-mcp pull
+cd /path/to/pm2-mcp && uv sync --frozen --no-dev --no-editable
 pm2 restart pm2-mcp
 ```
 
-Then run the deploy-verification check above. `restart` is enough for code changes;
-`ecosystem.config.js` changes need the delete/start cycle.
+Then run the deploy-verification check above. The reinstall is what changes the running
+code; `restart` alone would re-exec the old installed package. `ecosystem.config.js` changes
+need the delete/start cycle as well.
+
+**Upgrading from v0.4.x to v0.5.0 is a launch-path change.** v0.4.x ran `.venv/bin/python3
+server.py` from the checkout; v0.5.0 runs `.venv/bin/pm2-mcp`. Once the checkout is at
+v0.5.0, the old definition fails on its next restart, because `server.py` is no longer at
+the top level. So reinstall, then do the full `pm2 delete` + `pm2 start
+ecosystem.config.js` cycle from a clean shell, and `pm2 save`.
 
 ## Logs
 

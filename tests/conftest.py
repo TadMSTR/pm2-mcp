@@ -30,3 +30,9 @@ def restored_logger_state():
         server._log.setLevel(original_level)
         server._log.propagate = original_propagate
         server._log.handlers[:] = original_handlers
+
+
+@pytest.fixture(autouse=True)
+def unbound(monkeypatch):
+    """main() records its bind in module state; no test may inherit another's."""
+    monkeypatch.setattr(server, "_BIND", None)

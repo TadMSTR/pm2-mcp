@@ -114,19 +114,24 @@ _CHILD_ENV_ALLOWLIST = frozenset(
 # that started this service. Whether the CLI cares is not something to settle by reading
 # it, which is the whole reason this ships observing rather than enforcing.
 #
-# Deliberately NOT wired through ecosystem.config.js's `env` block, which is empty on
-# purpose (see that file). Flipping to enforcement is a one-word change to this default,
-# reviewed as a diff and redeployed — not an environment variable set on a service whose
-# entire posture is that it needs none.
-# SECURITY[deferred]: enforcement has been verified against the live daemon on READ paths
-# only — pm2 jlist, --version and logs. No write verb (restart/stop/start/reload/flush/save)
-# has been exercised under the trimmed environment, and it cannot be: every _run_pm2 test
-# mocks subprocess.run, so the suite cannot see a real pm2 CLI incompatibility on a write
-# path. PM2_JSON_PROCESSING and PM2_USAGE are withheld and are set by pm2 itself.
-# Do NOT change this default to "enforce" until vikunja#771 (id 854) is closed — it carries
-# the exact command to run. Shadow-log observation does not substitute: the log says which
-# variables would go, not whether pm2 needed them.
+# Read from PM2_MCP_ENV_MODE, once, at import. Unset (the deployed state) means shadow.
+# The variable is NOT in ecosystem.config.js's `env` block, which is empty on purpose (see
+# that file), and comments here used to say the mode was not wired to the environment at
+# all, while this line read it. Either route flips it: setting the variable, or changing
+# the default below as a reviewed diff. Which one is part of the flip decision.
+#
+# Any value other than "shadow" or "enforce" makes main() refuse to start (_ENV_MODES).
+# Before v0.5.0 an unrecognised value, say a typo of "enforce", ran shadow silently: an
+# operator who believed they had enforced it would have had no signal.
+#
+# SECURITY[deferred]: the flip is Ted's call (deferred 2026-09-09), on the evidence in
+# vikunja#771 (id 854). Since v0.5.0 that evidence includes the write verbs:
+# tests/test_integration_pm2.py drives restart/stop/start/reload/flush/save against a real
+# pm2 (6.0.14) and a private daemon under BOTH modes, with PM2_JSON_PROCESSING, PM2_USAGE,
+# NODE_APP_INSTANCE and the IPC pair in the parent, and every verb works and takes effect.
+# Do NOT change the default here as a side effect of other work.
 # Audit: 2026-09-09/pm2-mcp-showcase-2026-09 (F-03, Info). Ted's ruling 2026-09-09.
+_ENV_MODES = ("shadow", "enforce")
 _ENV_MODE = os.environ.get("PM2_MCP_ENV_MODE", "shadow").strip().lower()
 
 _log = logging.getLogger("pm2_mcp")
@@ -142,6 +147,11 @@ _LOG_HANDLER_TAG = "_pm2_mcp_owned_handler"
 # imports the same literal it is checking asserts nothing.
 _DEFAULT_HOST = "127.0.0.1"
 _DEFAULT_PORT = 8486
+
+# The (host, port) main() actually bound, for get_status. None until main() runs. Before
+# v0.5.0 get_status re-read MCP_HOST/MCP_PORT instead, so with ecosystem.config.js passing
+# --host/--port (which win) it could report a bind the server was not using.
+_BIND: tuple | None = None
 
 
 def _configure_logging() -> None:
@@ -684,9 +694,9 @@ def flush_logs(name: str) -> dict:
 def get_status() -> dict:
     """Return server metadata and PM2 health summary.
 
-    Reports configured host/port, PM2 version, total service count, and
-    a breakdown of services by status. Use this to verify setup after
-    installation.
+    Reports the bound host/port, the env-allowlist mode (shadow or enforce), the
+    PM2 version, the total service count, and a breakdown of services by status.
+    Use this to verify setup after installation or a deploy.
     """
     try:
         version_result = _run_pm2("--version")
@@ -704,9 +714,17 @@ def get_status() -> dict:
         services = []
         status_counts = {}
 
+    if _BIND is not None:
+        host, port = _BIND
+    else:
+        # Not started through main(): an embedding or a test. Report what main() would
+        # have resolved from the environment alone.
+        host = os.environ.get("MCP_HOST") or _DEFAULT_HOST
+        port = int(os.environ.get("MCP_PORT") or _DEFAULT_PORT)
     return {
-        "host": os.environ.get("MCP_HOST") or "127.0.0.1",
-        "port": int(os.environ.get("MCP_PORT") or "8486"),
+        "host": host,
+        "port": port,
+        "env_mode": _ENV_MODE,
         "pm2_version": pm2_version,
         "service_count": len(services),
         "status_counts": status_counts,
@@ -726,9 +744,17 @@ def main(argv: list | None = None) -> None:
     startup-only logic has no test that can reach it. A test drives this function too,
     with mcp.run replaced, to pin that the Host/Origin guard is actually handed over.
     """
+    global _BIND
     _configure_logging()
+    if _ENV_MODE not in _ENV_MODES:
+        raise SystemExit(
+            f"pm2-mcp: refusing to start: PM2_MCP_ENV_MODE={_ENV_MODE[:32]!r} is not one of "
+            f"{', '.join(_ENV_MODES)}. An unrecognised mode would run shadow silently."
+        )
     # argv None makes argparse read sys.argv[1:] itself.
     host, port = _resolve_bind(argv)
+    _BIND = (host, port)
+    _log.info("starting on %s:%d, env-allowlist mode %s", host, port, _ENV_MODE)
     mcp.run(transport="streamable-http", host=host, port=port, middleware=_http_middleware())
 
 
