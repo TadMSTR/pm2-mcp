@@ -2,21 +2,26 @@ module.exports = {
   apps: [
     {
       name: "pm2-mcp",
-      script: "/home/ted/repos/personal/pm2-mcp/.venv/bin/python3",
-      args: ["server.py", "--host", "127.0.0.1", "--port", "8486"],
+      // The console entry point the package installs (v0.5.0, src/ layout). Until
+      // v0.5.0 this was the venv's python3 with `server.py` as its first arg, run from
+      // the checkout. Changing it needs `pm2 delete` + `pm2 start` (see below), and the
+      // venv must hold a NON-editable install from uv.lock first, or this path does not
+      // exist.
+      script: "/home/ted/repos/personal/pm2-mcp/.venv/bin/pm2-mcp",
+      args: ["--host", "127.0.0.1", "--port", "8486"],
       cwd: "/home/ted/repos/personal/pm2-mcp",
       interpreter: "none",
 
       // Empty ON PURPOSE — this server requires nothing from the environment.
       // The only two variables the source reads are MCP_HOST and MCP_PORT.
       // Neither is set in the running process today, so the bind address comes
-      // from the defaults in server.py's __main__ block: 127.0.0.1:8486.
+      // from the defaults in src/pm2_mcp/server.py: 127.0.0.1:8486.
       //
       // THE FLAGS IN `args` ABOVE ARE LIVE AS OF vikunja#770 (2026-09-10).
       // Say that plainly, because for months they were NOT and the comment here
       // claimed otherwise. History, so the next reader does not re-derive it:
       //
-      //   - Until 2026-09-09 `args` carried these same two flags while server.py
+      //   - Until 2026-09-09 `args` carried these same two flags while the server
       //     had no argparse and never read sys.argv. Both were inert. The process
       //     bound 8486 only because that was the hardcoded default, and the two
       //     agreed by coincidence — editing --port here would have changed nothing.
@@ -24,7 +29,7 @@ module.exports = {
       //     documentation of an intent the code did not implement.
       //   - #770 added the argparse that makes them real, so they are restored.
       //
-      // Precedence is argv > MCP_HOST/MCP_PORT > server.py's 127.0.0.1:8486
+      // Precedence is argv > MCP_HOST/MCP_PORT > the server's 127.0.0.1:8486
       // default, so these flags now win over anything set in `env` below.
       //
       // The bind is LOOPBACK-ONLY and enforced in code: a non-loopback --host
@@ -37,8 +42,9 @@ module.exports = {
       // 2026-09-10: this file was edited 2026-09-09 21:17 and the process was
       // restarted 2026-09-10 05:53, yet the live process still carried the args
       // the file no longer declared. `pm2 restart` re-execs the script from disk
-      // (so CODE changes do land) but re-reads its config from PM2's own dump,
-      // not from here. Applying a change to this file needs `pm2 delete` +
+      // but re-reads its config from PM2's own dump, not from here. Since v0.5.0
+      // the code it re-execs is the INSTALLED package in .venv, not the checkout:
+      // a `git pull` changes nothing until the venv is reinstalled from uv.lock. Applying a change to this file needs `pm2 delete` +
       // `pm2 start ecosystem.config.js` — which re-captures the calling shell's
       // entire environment (the vikunja#767 mechanism) and, since #772 made the
       // shadow log actually reach disk, would now also write the NAMES of every

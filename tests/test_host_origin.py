@@ -15,7 +15,7 @@ import sys
 import pytest
 from starlette.testclient import TestClient
 
-import server
+from pm2_mcp import server
 
 INIT = {
     "jsonrpc": "2.0",

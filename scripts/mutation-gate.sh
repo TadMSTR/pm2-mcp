@@ -11,7 +11,7 @@
 # demands zero rather than a percentage.
 #
 # mutmut has no function-level scoping: only_mutate/do_not_mutate take FILE globs, and
-# this repo is a single flat server.py. So the scoping happens here, by filtering
+# the server is a single module. So the scoping happens here, by filtering
 # `mutmut results` on the mutant key, which embeds the function name.
 #
 # Usage: scripts/mutation-gate.sh
@@ -132,7 +132,12 @@ for fn in clean_env allowlist_env denylist_env run_pm2 is_loopback; do
 done
 
 # --- The gate ---------------------------------------------------------------------
-if grep -E "^[[:space:]]*server\.x__(${FUNCS})__mutmut_[0-9]+: survived" "$RESULTS"; then
+# NOT anchored on the module path. It was `^\s*server\.x__...` while the module was flat,
+# and the v0.5.0 move to src/pm2_mcp/ renamed every key to `pm2_mcp.server.x__...`. An
+# anchored pattern left behind by such a move matches nothing, and the gate then passes
+# with survivors present, while the positive control above (which never was anchored)
+# still counts them as evaluated. The function-name part is what identifies the mutant.
+if grep -E "x__(${FUNCS})__mutmut_[0-9]+: survived" "$RESULTS"; then
   echo ""
   echo "FAIL: a mutant survived in a trust-boundary function (vikunja#767, #769)."
   echo "      These are the functions that keep session credentials and PM2 IPC vars"

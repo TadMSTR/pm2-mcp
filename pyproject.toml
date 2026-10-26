@@ -42,31 +42,24 @@ dev = [
     "pip-audit>=2.10",
 ]
 
+[project.scripts]
+pm2-mcp = "pm2_mcp.server:main"
+
 [build-system]
 requires = ["setuptools>=68"]
 # `setuptools.backends.legacy:build` was here until 2026-09-09 and is not a real backend —
-# `python -m build` failed outright with `BackendUnavailable`. The package had therefore been
-# unbuildable since the backend was written, through two releases, because ci.yml's smoke test
-# imports `server` from the source tree and never touches the built artifact. Setuptools'
-# auto-discovery picks up the flat server.py from this alone; no [tool.setuptools] py-modules
-# entry is needed. (vikunja#769)
+# `python -m build` failed outright with `BackendUnavailable`, unnoticed for two releases
+# because the old smoke test imported from the source tree (vikunja#769).
 build-backend = "setuptools.build_meta"
 
-[tool.setuptools]
-# Explicit, NOT redundant — and the preflight note saying py-modules "is not required" was
-# right only about a clean tree. Setuptools' flat-layout auto-discovery infers what to ship
-# from whatever directories happen to be present, so the artifact is a function of the
-# working tree rather than of this file.
-#
-# Measured 2026-09-09: building straight after a local `mutmut run` (which leaves a
-# mutants/ directory behind) produced a wheel containing mutants/server.py and
-# mutants/tests/ and NO top-level server.py — an artifact that ships the entire mutant
-# corpus and omits the actual module. Building the same commit on a clean tree produced
-# the correct ['server.py']. CI never sees this because it builds a fresh checkout, so it
-# would have shipped from a maintainer's machine unnoticed.
-#
-# Naming the module pins the contents regardless of what else is lying around.
-py-modules = ["server"]
+[tool.setuptools.packages.find]
+# src/ layout since v0.5.0 (repo standard P2). Explicit, NOT redundant: flat-layout
+# auto-discovery inferred the wheel's contents from whatever directories were present,
+# and a build straight after a local `mutmut run` shipped mutants/server.py and
+# mutants/tests/ with NO top-level server.py (measured 2026-09-09). Naming the root and
+# the package pins the contents regardless of what else is lying around.
+where = ["src"]
+include = ["pm2_mcp*"]
 
 [tool.ruff]
 line-length = 100
@@ -75,9 +68,8 @@ target-version = "py310"
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]
 
-# Flat layout — `server` is a first-party module here, not site-packages.
 [tool.ruff.lint.isort]
-known-first-party = ["server"]
+known-first-party = ["pm2_mcp"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -85,10 +77,10 @@ testpaths = ["tests"]
 # floor existing in config but only being applied by a CI flag is how a floor ends up
 # unenforced everywhere it would actually catch something — which is the state this repo was
 # in before 2026-09-09. Requires pytest-cov, which the locked dev extra installs.
-addopts = "--cov=server --cov-report=term-missing"
+addopts = "--cov=pm2_mcp --cov-report=term-missing"
 
 [tool.coverage.run]
-source = ["server"]
+source = ["pm2_mcp"]
 
 [tool.coverage.report]
 show_missing = true
@@ -121,15 +113,15 @@ exclude_also = [
 [tool.mutmut]
 # Mutation-testing pilot (vikunja#769). The GATE is not this config — see .github/workflows/
 # ci.yml, which filters `mutmut results` by mutant key. mutmut has no function-level scoping:
-# only_mutate/do_not_mutate take FILE globs and this repo is a single flat server.py, so
+# only_mutate/do_not_mutate take FILE globs and the server is a single module, so
 # there is no config that expresses "mutate only the trust-boundary functions". Verified
 # against mutmut 3.7.0's own configuration.py.
-source_paths = ["server.py"]
+source_paths = ["src/pm2_mcp/server.py"]
 pytest_add_cli_args_test_selection = ["tests/"]
 # --no-cov is load-bearing, not tidiness, and this is the pilot's most transferable finding.
 #
 # [tool.pytest.ini_options].addopts turns coverage on for EVERY pytest run, carrying
-# fail_under = 100. mutmut works by rewriting server.py into mutants/server.py, where all 129
+# fail_under = 100. mutmut works by rewriting server.py into mutants/src/, where all 129
 # mutants exist side by side as separate functions and exactly one is active per run — 129
 # statements become 1107. By construction the other 128 mutants' bodies are never executed,
 # so coverage in that directory measures ~37% no matter how good the tests are.

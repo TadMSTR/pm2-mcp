@@ -2,7 +2,7 @@
 
 import pytest
 
-import server
+from pm2_mcp import server
 
 
 @pytest.fixture

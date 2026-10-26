@@ -204,50 +204,58 @@ jobs:
   build:
     name: Build and verify the installed artifact
     runs-on: ubuntu-latest
+    needs: test
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # No token left in .git/config for later steps to read.
           persist-credentials: false
-
-      - name: Set up Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.13"
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: "0.13.4"
 
       - name: Build wheel and sdist
-        run: |
-          pip install build
-          python -m build
+        run: uv build
 
       # This job exists because the package was UNBUILDABLE for two releases without CI
-      # noticing (vikunja#769): build-backend was set to a name that does not exist, and
-      # the old smoke test did `python -c "from server import ..."` against the source
-      # tree, which passes whether or not the package can be built or installed.
+      # noticing (vikunja#769): build-backend named a backend that does not exist, and the
+      # old smoke test imported from the source tree, which passes whether or not the
+      # package can be built or installed.
       #
-      # So: install the wheel into a clean venv and import from THAT, with the working
-      # directory moved out of the checkout so a stray `server.py` on the path cannot
-      # satisfy the import and hide a broken artifact.
+      # So: install the wheel into a clean venv, with the locked runtime set, and import
+      # from THAT with the working directory outside the checkout, so a stray source tree
+      # on the path cannot satisfy the import and hide a broken artifact. The console
+      # script is what ecosystem.config.js runs, so it is checked as well.
       - name: Install the wheel into a clean venv and smoke-test it
         run: |
           set -euxo pipefail
-          python -m venv /tmp/verify
-          /tmp/verify/bin/pip install --upgrade pip
-          /tmp/verify/bin/pip install dist/*.whl
+          uv export --frozen --no-emit-project --no-extra dev -o "$RUNNER_TEMP/runtime.txt"
+          uv venv -q /tmp/verify
+          uv pip install -q -p /tmp/verify -r "$RUNNER_TEMP/runtime.txt"
+          uv pip install -q -p /tmp/verify --no-deps dist/*.whl
           mkdir -p /tmp/elsewhere
           cd /tmp/elsewhere
-          test ! -e server.py
+          test ! -e src
           /tmp/verify/bin/python -c "
-          import server
+          import pm2_mcp.server as server
           print('imported from:', server.__file__)
           assert '/tmp/verify/' in server.__file__, 'imported the checkout, not the wheel'
-          from server import (
-              mcp, list_services, get_service, get_logs, restart_service, stop_service,
-              start_service, reload_service, save, flush_logs, get_status,
+          from pm2_mcp.server import (
+              mcp, main, list_services, get_service, get_logs, restart_service,
+              stop_service, start_service, reload_service, save, flush_logs, get_status,
           )
           print('all tools importable from the installed wheel')
           "
+          test -x /tmp/verify/bin/pm2-mcp
+          /tmp/verify/bin/pm2-mcp --help
+          # The bind guard runs before anything listens: a non-loopback host must refuse.
+          if /tmp/verify/bin/pm2-mcp --host 0.0.0.0; then
+            echo "::error::the installed entry point accepted a non-loopback bind"; exit 1
+          fi
 
       - name: Upload distributions
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
