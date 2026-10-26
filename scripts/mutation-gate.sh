@@ -24,7 +24,7 @@ RESULTS="mutmut-results.txt"
 
 # Fail loudly rather than letting `|| true` below turn a missing binary into a pass.
 if ! command -v "$MUTMUT" >/dev/null 2>&1; then
-  echo "FAIL: mutmut not found (tried: $MUTMUT). Install requirements-dev.txt."
+  echo "FAIL: mutmut not found (tried: $MUTMUT). Install the dev extra: uv sync --frozen --extra dev."
   exit 1
 fi
 

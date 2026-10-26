@@ -20,3 +20,5 @@ mutants/
 dist/
 build/
 mutmut-results.txt
+.audit-runtime/
+.audit-dev/
