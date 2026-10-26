@@ -1103,6 +1103,10 @@ class TestResolveBindRefusesNonLoopback:
             "example.com",
             "mcp.example.invalid",
             "",
+            # Scoped loopback: ipaddress calls these loopback, but no client's Host can
+            # match them (R2-01). Refused, not admitted and then answered 421.
+            "::1%lo",
+            "::1%25lo",
         ],
     )
     def test_non_loopback_host_is_refused(self, host, capsys):

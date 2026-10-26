@@ -17,7 +17,7 @@ GATE = Path(__file__).resolve().parent.parent / "scripts" / "mutation-gate.sh"
 
 # The floors in the script. A listing below them fails for a different reason, so the
 # status cases start from a listing that meets every floor.
-FLOORS = {"clean_env": 25, "allowlist_env": 1, "denylist_env": 4, "run_pm2": 22, "is_loopback": 6}
+FLOORS = {"clean_env": 25, "allowlist_env": 1, "denylist_env": 4, "run_pm2": 22, "is_loopback": 9}
 
 STUB = """#!/bin/sh
 case "$1" in
@@ -57,7 +57,7 @@ def _run_gate(tmp_path, listing):
 def test_all_killed_passes(tmp_path):
     result = _run_gate(tmp_path, _listing())
     assert result.returncode == 0, result.stdout + result.stderr
-    assert "PASS: all 58 trust-boundary mutants killed" in result.stdout
+    assert "PASS: all 61 trust-boundary mutants killed" in result.stdout
 
 
 @pytest.mark.parametrize(
@@ -79,10 +79,10 @@ def test_ungated_function_survivors_are_ignored(tmp_path):
 
 
 def test_count_below_floor_fails(tmp_path):
-    listing = _listing().replace("    pm2_mcp.server.x__is_loopback__mutmut_6: killed\n", "")
+    listing = _listing().replace("    pm2_mcp.server.x__is_loopback__mutmut_9: killed\n", "")
     result = _run_gate(tmp_path, listing)
     assert result.returncode == 1
-    assert "_is_loopback generated 5 mutants, below the measured floor of 6" in result.stdout
+    assert "_is_loopback generated 8 mutants, below the measured floor of 9" in result.stdout
 
 
 def test_empty_listing_fails(tmp_path):

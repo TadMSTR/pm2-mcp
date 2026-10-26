@@ -203,9 +203,15 @@ def _is_loopback(host: str) -> bool:
     A bare hostname other than `localhost` is refused rather than resolved. Resolution
     is not a security boundary — the name can point anywhere, and can change to point
     somewhere else after this check passes without the process restarting.
+
+    An IPv6 scope ID (`::1%lo`) is refused although `ipaddress` accepts it as loopback.
+    A zone never helps on loopback, and clients send it as `%25` in Host (RFC 6874), so
+    the Host check would refuse every request to such a bind (audit R2-01).
     """
     if host == "localhost":
         return True
+    if "%" in host:
+        return False
     try:
         return ipaddress.ip_address(host).is_loopback
     except ValueError:

@@ -113,7 +113,10 @@ fi
 # stale cache runs a new test against none of the mutants it covers, so killed mutants are
 # reported as survivors (measured 2026-10-25: the logger-silencing kills only appeared after
 # `rm -rf mutants`). CI always starts from a fresh checkout.
-declare -A MIN_MUTANTS=( [clean_env]=25 [allowlist_env]=1 [denylist_env]=4 [run_pm2]=22 [is_loopback]=6 )
+# MEASURED 2026-10-25 (audit R2-01): _is_loopback 9, zero survivors. Up from 6 because it
+# now refuses an IPv6 scope ID (`%`). The floor moves with it, so deleting that refusal
+# fails here and not only in the unit suite.
+declare -A MIN_MUTANTS=( [clean_env]=25 [allowlist_env]=1 [denylist_env]=4 [run_pm2]=22 [is_loopback]=9 )
 
 for fn in clean_env allowlist_env denylist_env run_pm2 is_loopback; do
   n=$(grep -cE "x__${fn}__mutmut_[0-9]+: " "$RESULTS" || true)

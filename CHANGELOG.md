@@ -67,11 +67,14 @@ then `pm2 save`. A `pm2 restart` after the pull crash-loops. See docs/operations
   `survived`, so `no tests`, `not checked` (an aborted run) and `timeout` passed, and so did
   the positive control and the floors. `tests/test_mutation_gate.py` drives the script
   through a stub mutmut, one case per status.
+- A scoped IPv6 bind (`--host ::1%lo`) passed the loopback check, then answered every request
+  421; clients write the zone as `%25` in `Host`. A `%` in the bind host is now refused.
 - `.gitignore`: `core.[0-9]*` instead of `core.*`, which would also have ignored a `core.py`.
 - Mutation gate: the survivor check is no longer anchored on the module path, which the
   `src/` move changed. An anchored pattern left behind by such a move matches nothing and
-  passes with survivors present. Mutant counts are unchanged (`_clean_env` 25,
-  `_allowlist_env` 1, `_denylist_env` 4, `_run_pm2` 22, `_is_loopback` 6).
+  passes with survivors present. The src move left the counts unchanged (`_clean_env` 25,
+  `_allowlist_env` 1, `_denylist_env` 4, `_run_pm2` 22, `_is_loopback` 6). `_is_loopback`
+  is now 9, with its floor raised to match, after the scope-ID refusal above.
 
 ## [0.4.0] — 2026-09-10
 
