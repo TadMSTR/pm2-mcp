@@ -80,8 +80,8 @@ get_service(name="my-api")
   "script": "/opt/my-api/.venv/bin/python",
   "cwd": "/opt/my-api",
   "args": "server.py --port 9000",
-  "log_file": "/home/ted/.pm2/logs/my-api-out.log",
-  "error_file": "/home/ted/.pm2/logs/my-api-err.log",
+  "log_file": "/home/user/.pm2/logs/my-api-out.log",
+  "error_file": "/home/user/.pm2/logs/my-api-err.log",
   "created_at": "2026-08-14T09:12:03Z"
 }
 ```

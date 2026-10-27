@@ -4,7 +4,7 @@ FastMCP server wrapping the PM2 CLI via subprocess. Provides structured read and
 
 ## What it does
 
-Exposes PM2 process management as MCP tools — list, inspect, control lifecycle, and fetch recent logs for any PM2-managed service on forge.
+Exposes PM2 process management as MCP tools — list, inspect, control lifecycle, and fetch recent logs for any PM2-managed service on the host.
 
 ## Tools
 
@@ -44,7 +44,7 @@ uv.lock                 The dependency set CI tests, audits and the deploy insta
 - **`_configure_logging()`** — must stay a function called from `main()`, never module-level or import-time code. `pyproject.toml` sets `fail_under = 100` and excludes the `__main__` block from coverage, so startup logic written there is untestable, invisible to coverage, and unreachable from a regression test. That is exactly how vikunja#772 shipped: the shadow log had no level and no handler for its entire life, and every test that "covered" it forced the level via `caplog.at_level(...)`, which production never has. If you add startup behaviour, extract it the same way and test it without forcing a level.
 - **`HostOriginGuard`** — the DNS-rebinding check (v0.5.0). Loopback `Host` names and the bound address on any port (mcp's prefix wildcard), plus exact `PM2_MCP_ALLOWED_HOSTS` entries (`*` refuses to start); any non-empty `Origin` refused. It is handed to `mcp.run` by `main()`, and a test pins that it is. Never log the header values.
 - **`PM2_MCP_ENV_MODE`** — `shadow` (default) or `enforce`; anything else makes `main()` refuse to start. **Do not flip it** as part of other work: that is Ted's decision on vikunja#771.
-- **Dependencies** — fastmcp, and minimum versions on mcp and several transitives, each carrying the advisory it closes. `uv.lock` is the source of truth; CI installs from it and audits it. PM2 is already installed globally on forge. No auth — this server is intended for localhost use only, and the loopback bind is enforced. See `docs/threat-model.md`.
+- **Dependencies** — fastmcp, and minimum versions on mcp and several transitives, each carrying the advisory it closes. `uv.lock` is the source of truth; CI installs from it and audits it. PM2 must already be installed on the host. No auth — this server is intended for localhost use only, and the loopback bind is enforced. See `docs/threat-model.md`.
 
 ## Testing
 

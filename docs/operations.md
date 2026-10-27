@@ -46,13 +46,13 @@ it.
 
 Since v0.4.0 there is a **second, independent reason**, and it is new. vikunja#772 fixed the
 logger, so shadow mode now actually writes to disk — which means the *names* of every
-withheld variable in the starting shell's environment land in `/home/ted/logs/pm2-mcp.log`.
+withheld variable in the starting shell's environment land in the app's PM2 log (`out_file` in `ecosystem.config.js`).
 Measured 2026-09-10, same code, two different parents:
 
 | Started by | Names in the shadow line | Of which secret-shaped |
 |---|---|---|
 | PM2 at boot | 62 | **0** |
-| An interactive agent shell | 84 | **12** (`TASK_QUEUE_TOKEN_*`, `LANGFUSE_SECRET_KEY`, …) |
+| An interactive agent shell | 84 | **12** (token- and key-named variables) |
 
 Both rows are counts from the real log line, taken after the v0.4.0 redeploy.
 

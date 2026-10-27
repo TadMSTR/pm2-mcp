@@ -29,7 +29,7 @@ flowchart LR
 | `list_services` | List all PM2 services. Optional `status_filter`: `"online"`, `"stopped"`, or `"errored"`. |
 | `get_service` | Full detail for one service by name — script path, cwd, args, log file paths, created_at, plus all summary fields. |
 | `get_logs` | Tail recent log output for one registered service. `lines` defaults to 50 (max 500); `include_errors` defaults to `true`. |
-| `get_status` | Server metadata and PM2 health summary — configured host/port, PM2 version, service counts by status. |
+| `get_status` | Server metadata and PM2 health summary — the host/port actually bound, the env-allowlist mode (`env_mode`: `shadow` or `enforce`), PM2 version, total service count, and counts by status. |
 
 ### Write
 
@@ -74,7 +74,7 @@ Things this server deliberately does not do. Each is a decision, not a gap:
   `ecosystem.config.js`, not in an agent tool call.
 - **There is no `delete` verb, and there will not be one.** `pm2 delete` discards the
   process definition, and re-creating it re-captures the calling shell's environment — the
-  exact mechanism behind [#767](https://github.com/TadMSTR/pm2-mcp/issues/767). The
+  exact mechanism behind vikunja#767. The
   destructive verb with the worst failure mode is the one least worth automating.
 - **It has no authentication, by design.** It binds loopback only and is expected to stay
   that way. Adding auth would imply the port could safely be exposed, which is not the
@@ -160,8 +160,9 @@ Precedence is per-field, not all-or-nothing: passing only `--host` leaves the po
 | `PM2_MCP_ALLOWED_HOSTS` | unset | Extra `Host` header values to accept, comma-separated, each an exact `name:port`. An entry containing `*` refuses to start. Loopback names and the bound address are always accepted. See [Security](#security). |
 | `PM2_MCP_ENV_MODE` | `shadow` | Environment allowlist mode: `shadow` or `enforce`. Any other value refuses to start. See [Security](#security). |
 
-Copy `.env.example` to `.env` and fill in the values you need. Blank environment variables
-are treated as unset and use the defaults shown above.
+`.env.example` lists the bind variables. The server does not load a `.env` file — set these in
+the process environment (or pass the flags) instead. Blank environment variables are treated
+as unset and use the defaults shown above.
 
 ### The bind is loopback-only, and that is enforced
 
@@ -179,19 +180,25 @@ boundary.
 
 > **Note:** these flags were accepted but silently ignored before v0.4.0 — `server.py` had no
 > argument parsing and read only `MCP_HOST`/`MCP_PORT`. They are live as of
-> [#770](https://github.com/TadMSTR/pm2-mcp/issues/770).
+> vikunja#770.
 
 ---
 
 ## Wiring to Claude Code
 
-Add to `~/.claude/settings.json` under `mcpServers`:
+Register it as an HTTP server:
+
+```bash
+claude mcp add --transport http pm2 http://127.0.0.1:8486/mcp
+```
+
+or, per project, in `.mcp.json`:
 
 ```json
 {
   "mcpServers": {
     "pm2": {
-      "type": "streamable-http",
+      "type": "http",
       "url": "http://127.0.0.1:8486/mcp"
     }
   }
@@ -204,7 +211,7 @@ Add to `~/.claude/settings.json` under `mcpServers`:
 
 The server binds loopback only, and **that is enforced in code rather than defaulted** — a non-loopback `--host` or `MCP_HOST` exits non-zero instead of starting, with no override flag. See [Bind address and port](#bind-address-and-port). Any client that *can* reach port 8486 can restart or stop services, because there is no authentication. That is intentional for local agent use: keep it loopback-only and don't proxy it externally.
 
-A loopback bind keeps other machines out but not a browser on the same host, which DNS rebinding can point at `127.0.0.1`. So every HTTP request is also checked for its `Host` and `Origin` headers (since v0.5.0): a `Host` that is not `127.0.0.1`, `localhost`, `[::1]` or the bound address, followed by `:` and a port, gets **421**, and a request carrying a non-empty `Origin` gets **403**, because only browsers send one and no browser is a client. The port match is mcp's prefix wildcard, so it accepts anything after the `:`; a browser can only send digits there. `PM2_MCP_ALLOWED_HOSTS` adds exact extra `Host` values; it is unset by default and nothing on forge needs it.
+A loopback bind keeps other machines out but not a browser on the same host, which DNS rebinding can point at `127.0.0.1`. So every HTTP request is also checked for its `Host` and `Origin` headers (since v0.5.0): a `Host` that is not `127.0.0.1`, `localhost`, `[::1]` or the bound address, followed by `:` and a port, gets **421**, and a request carrying a non-empty `Origin` gets **403**, because only browsers send one and no browser is a client. The port match is mcp's prefix wildcard, so it accepts anything after the `:`; a browser can only send digits there. `PM2_MCP_ALLOWED_HOSTS` adds exact extra `Host` values; it is unset by default, and a client connecting to `127.0.0.1` or `localhost` does not need it.
 
 The write tools (`restart_service`, `stop_service`, `start_service`, `reload_service`, `flush_logs`) and `get_logs` validate service names against the live PM2 process list before acting. An unrecognized name returns `{ok: false, error: "service '...' not found"}` without touching PM2.
 

@@ -1,7 +1,7 @@
 # Examples
 
-Real configuration, not illustrations. Everything here is either the file forge actually
-deploys or a transcript of a real diagnosis.
+Real configuration, not illustrations. Everything here is either the file actually
+deployed or a transcript of a real diagnosis.
 
 | File | What it is |
 |---|---|

@@ -10,7 +10,7 @@ known gap it says so plainly; an undocumented gap is worse than an accepted one.
 ## What the server is
 
 A localhost-bound HTTP server that can **stop, start, restart or reload any process the PM2
-daemon manages**, and read their logs. On a typical forge host that is ~42 processes,
+daemon manages**, and read their logs. On a busy host that can be dozens of processes,
 including every agent's own MCP broker.
 
 It runs as an ordinary user, not root, and inherits exactly that user's authority over PM2.
@@ -116,7 +116,7 @@ in both modes, with the variables pm2 sets on its children (`NODE_APP_INSTANCE`,
 `PM2_JSON_PROCESSING`, `PM2_USAGE`, and the IPC pair) present in the parent. Every verb
 succeeds and has its effect in both modes. A child `PATH` that cannot reach pm2 makes every
 verb fail, so the test can see a broken environment. Dropping `PATH` outright cannot be that
-control on forge: pm2 and node are in `/usr/bin`, which is the fallback search path.
+control on a host where pm2 and node are in `/usr/bin`, which is the fallback search path.
 
 Measured on the live process before enforcing: 20 environment variables, of which 13 would be
 withheld and **none** is secret-shaped. So enforcement is not removing credentials that are
