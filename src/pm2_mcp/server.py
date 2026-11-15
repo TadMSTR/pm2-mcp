@@ -767,12 +767,18 @@ def get_status() -> dict:
     Reports the bound host/port, the env-allowlist mode (shadow or enforce), the
     PM2 version, the total service count, and a breakdown of services by status.
     Use this to verify setup after installation or a deploy.
+
+    ``degraded`` is true when either pm2 call failed or timed out; ``errors`` then names
+    the failed stage (``version``, ``jlist``) and its message. A degraded result's
+    ``service_count`` of 0 means "could not read", not "no services".
     """
+    errors: dict[str, str] = {}
     try:
         version_result = _run_pm2("--version")
         pm2_version = version_result.stdout.strip()
-    except RuntimeError:
+    except RuntimeError as e:
         pm2_version = "unknown"
+        errors["version"] = str(e)
 
     try:
         services = _get_all_services()
@@ -780,9 +786,14 @@ def get_status() -> dict:
         for s in services:
             status = s.get("pm2_env", {}).get("status", "unknown")
             status_counts[status] = status_counts.get(status, 0) + 1
-    except RuntimeError:
+    except RuntimeError as e:
         services = []
         status_counts = {}
+        errors["jlist"] = str(e)
+
+    if errors:
+        # A wedged daemon used to read as a healthy, empty pm2.
+        _log.warning("get_status degraded: %s", "; ".join(f"{k}: {v}" for k, v in errors.items()))
 
     if _BIND is not None:
         host, port = _BIND
@@ -798,6 +809,8 @@ def get_status() -> dict:
         "pm2_version": pm2_version,
         "service_count": len(services),
         "status_counts": status_counts,
+        "degraded": bool(errors),
+        **({"errors": errors} if errors else {}),
     }
 
 

@@ -29,7 +29,7 @@ flowchart LR
 | `list_services` | List all PM2 services. Optional `status_filter`: `"online"`, `"stopped"`, or `"errored"`. |
 | `get_service` | Full detail for one service by name — script path, cwd, args, log file paths, created_at, plus all summary fields. |
 | `get_logs` | Tail recent log output for one registered service. `lines` defaults to 50 (max 500); `include_errors` defaults to `true`. |
-| `get_status` | Server metadata and PM2 health summary — the host/port actually bound, the env-allowlist mode (`env_mode`: `shadow` or `enforce`), PM2 version, total service count, and counts by status. |
+| `get_status` | Server metadata and PM2 health summary — the host/port actually bound, the env-allowlist mode (`env_mode`: `shadow` or `enforce`), PM2 version, total service count, and counts by status. `degraded: true` with `errors` when a pm2 call failed or timed out, so 0 services then means "could not read". |
 
 ### Write
 

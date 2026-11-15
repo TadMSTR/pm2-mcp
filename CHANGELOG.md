@@ -10,7 +10,9 @@ All notable changes to pm2-mcp are documented here.
   no timeout, so a hung `pm2` (a wedged daemon, a held lock) hung the tool call with it. It now
   passes `timeout=` (default 30 s, `PM2_MCP_PM2_TIMEOUT` to change it, (0, 600]) and turns
   `TimeoutExpired` into the same `RuntimeError` a failed command raises, so every tool reports
-  `pm2 <args> timed out after <n>s` as an error. An invalid `PM2_MCP_PM2_TIMEOUT` refuses to
+  `pm2 <args> timed out after <n>s` as an error. `get_status`, which used to swallow both of
+  its pm2 calls and report a wedged daemon as `pm2_version: "unknown"` with 0 services, now
+  returns `degraded: true` and `errors` naming the failed stage, and logs a warning. An invalid `PM2_MCP_PM2_TIMEOUT` refuses to
   start. The mutation gate covers the new branch: `_run_pm2` goes from 22 to 28 mutants, all
   killed.
 - **"Starting it cleanly" no longer rejects pm2's own `PWD`** (vikunja#1261). pm2 sets `PWD` to

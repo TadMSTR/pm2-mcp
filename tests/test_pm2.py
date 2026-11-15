@@ -434,6 +434,33 @@ class TestGetStatus:
 
         assert result["pm2_version"] == "unknown"
         assert result["service_count"] == 0
+        assert result["degraded"] is True
+        assert result["errors"] == {"version": "pm2 not found"}
+
+    def test_healthy_result_is_not_degraded(self):
+        with patch(
+            "pm2_mcp.server._run_pm2",
+            side_effect=[_completed(stdout="5.0.0\n"), _completed(stdout="[]")],
+        ):
+            result = server.get_status()
+        assert result["degraded"] is False
+        assert "errors" not in result
+
+    def test_a_timed_out_daemon_is_degraded_not_empty(self, caplog):
+        """A wedged daemon (both stages time out) must not read as a healthy pm2 with 0 apps."""
+        with (
+            patch(
+                "pm2_mcp.server.subprocess.run",
+                side_effect=subprocess.TimeoutExpired("pm2", 30),
+            ),
+            caplog.at_level(logging.WARNING, logger="pm2_mcp"),
+        ):
+            result = server.get_status()
+        assert result["degraded"] is True
+        assert set(result["errors"]) == {"version", "jlist"}
+        assert all("timed out after" in m for m in result["errors"].values())
+        assert result["service_count"] == 0
+        assert any("get_status degraded" in r.getMessage() for r in caplog.records)
 
 
 # ---------------------------------------------------------------------------
@@ -673,6 +700,8 @@ class TestGetStatusDegraded:
         assert result["pm2_version"] == "5.0.0"
         assert result["service_count"] == 0
         assert result["status_counts"] == {}
+        assert result["degraded"] is True
+        assert result["errors"] == {"jlist": "pm2 jlist failed (rc=1): daemon unreachable"}
 
     def test_reports_unknown_version_and_empty_counts_when_pm2_is_absent(self):
         """Both calls fail — the degraded path must still return a well-formed dict."""
