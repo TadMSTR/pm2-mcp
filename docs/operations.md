@@ -29,7 +29,8 @@ Read the comment block in that file before editing it. Two things there are load
 
 - **`env: {}` is deliberate.** It asserts that the app requires nothing from the environment,
   which is true — the variables the code reads (`MCP_HOST`, `MCP_PORT`,
-  `PM2_MCP_ALLOWED_HOSTS`, `PM2_MCP_ENV_MODE`) all have safe defaults when unset. Do not add a shared-secrets loader: PM2 would write every key into
+  `PM2_MCP_ALLOWED_HOSTS`, `PM2_MCP_ENV_MODE`, `PM2_MCP_PM2_TIMEOUT`) all have safe defaults
+  when unset. Do not add a shared-secrets loader: PM2 would write every key into
   `~/.pm2/dump.pm2` at the next `pm2 save`.
 - **`env: {}` does not scrub inheritance.** PM2 passes the parent environment through
   regardless. Starting the app from an interactive shell that has sourced a secrets file
@@ -95,16 +96,28 @@ import json, sys
 allowed = {"HOME", "PATH", "PM2_HOME", "PM2_USAGE", "PM2_JSON_PROCESSING",
            "PM2_INTERACTOR_PROCESSING", "pm2-mcp", "unique_id"}
 [app] = [a for a in json.load(sys.stdin) if a["name"] == "pm2-mcp"]
-extra = sorted(set(app["pm2_env"].get("env", {})) - allowed)
+env = app["pm2_env"].get("env", {})
+extra = set(env) - allowed
+# pm2 itself sets PWD to the app'"'"'s cwd on every start. Allowed only when it is exactly that.
+if env.get("PWD") == app["pm2_env"].get("pm_cwd"):
+    extra.discard("PWD")
+extra = sorted(extra)
 print("captured env beyond the clean set:", ", ".join(extra) or "none")
 sys.exit(1 if extra else 0)'
 ```
 
 The extra names are pm2's own (`PM2_USAGE`, `PM2_INTERACTOR_PROCESSING`), plus the app name
-and `unique_id`, which pm2 adds to every app. Exit 0: `pm2 save`. Exit 1: **do not save.**
-Run `pm2 delete pm2-mcp`, find out where the extra variables came from, and start again. Measured
-2026-10-25 against a throwaway daemon, pm2 6.0.14: the command above gives `none`. A plain
-`pm2 start` from an agent session gives 61 captured variables, `CLAUDE_*` among them.
+and `unique_id`, which pm2 adds to every app. `PWD` is pm2's too: `Common.prepareAppConf`
+(`lib/Common.js` in pm2 6.0.14) sets `process.env.PWD = app.cwd` for any app that declares a
+`cwd`, as `ecosystem.config.js` does, however clean the calling shell. So `PWD` passes only when
+it equals the app's `pm_cwd`; any other value still fails. Exit 0: `pm2 save`. Exit 1: **do not
+save.** Run `pm2 delete pm2-mcp`, find out where the extra variables came from, and start again.
+
+Measured with pm2 6.0.14 and this repository's `ecosystem.config.js`: the clean start above
+captures exactly one name beyond the old allowed set, `PWD`, equal to the declared `cwd`, and the
+check gives `none`. (An earlier version of this page said the check gave `none` without the
+`PWD` exception; that does not reproduce with this file.) A plain `pm2 start` from an agent
+session captures dozens of variables, `CLAUDE_*` among them.
 
 ## Choosing the bind address
 

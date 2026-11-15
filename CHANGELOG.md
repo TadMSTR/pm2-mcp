@@ -2,6 +2,38 @@
 
 All notable changes to pm2-mcp are documented here.
 
+## [0.5.1] — 2026-11-15
+
+### Fixed
+
+- **Every `pm2` CLI call is bounded** (vikunja#1255). `_run_pm2` called `subprocess.run` with
+  no timeout, so a hung `pm2` (a wedged daemon, a held lock) hung the tool call with it. It now
+  passes `timeout=` (default 30 s, `PM2_MCP_PM2_TIMEOUT` to change it, (0, 600]) and turns
+  `TimeoutExpired` into the same `RuntimeError` a failed command raises, so every tool reports
+  `pm2 <args> timed out after <n>s` as an error. An invalid `PM2_MCP_PM2_TIMEOUT` refuses to
+  start. The mutation gate covers the new branch: `_run_pm2` goes from 22 to 28 mutants, all
+  killed.
+- **"Starting it cleanly" no longer rejects pm2's own `PWD`** (vikunja#1261). pm2 sets `PWD` to
+  the app's declared `cwd` on every start, so the names-only check in docs/operations.md could
+  never pass for this repo's `ecosystem.config.js`. It now allows `PWD` only when it equals
+  `pm_cwd`, and the "measured: none" sentence is corrected.
+
+### Changed
+
+- `ecosystem.config.js` derives its paths: `script` and `cwd` from the file's own directory,
+  the log file from the home directory. The resolved values are unchanged for a checkout that
+  was already where the old literal paths pointed.
+- `examples/mcp-client.json` drops the settings.json form, which used a transport type and key
+  Claude Code does not accept there, and shows `claude mcp add --transport http` and the
+  `.mcp.json` block the README documents. `docs/threat-model.md` §2 no longer quotes counts
+  from one host's live process.
+
+### Security
+
+- Dependency floors for two transitive advisories: `opentelemetry-api>=1.45.2`
+  (CVE-2026-126360) and `dnspython>=2.9.2` (CVE-2026-128089). The lock moves dnspython
+  2.9.0 → 2.9.2 and opentelemetry-api 1.45.1 → 1.45.2.
+
 ## [0.5.0] — 2026-10-25
 
 **Deploy note: the launch path changes.** The PM2 app now runs the `pm2-mcp` console entry

@@ -760,6 +760,103 @@ class TestRunPm2SubprocessContract:
         assert "pm2 restart svc-a failed (rc=1): boom" in str(excinfo.value)
 
 
+class TestRunPm2Timeout:
+    """Every pm2 CLI call is bounded (vikunja#1255)."""
+
+    def test_default_timeout_is_passed_to_subprocess(self, monkeypatch):
+        monkeypatch.delenv("PM2_MCP_PM2_TIMEOUT", raising=False)
+        with patch("subprocess.run", return_value=_completed(stdout="[]")) as mock:
+            server._run_pm2("jlist")
+
+        assert "timeout" in mock.call_args.kwargs
+        assert mock.call_args.kwargs["timeout"] == 30.0
+
+    def test_env_override_is_passed_to_subprocess(self, monkeypatch):
+        monkeypatch.setenv("PM2_MCP_PM2_TIMEOUT", "2.5")
+        with patch("subprocess.run", return_value=_completed(stdout="[]")) as mock:
+            server._run_pm2("jlist")
+
+        assert mock.call_args.kwargs["timeout"] == 2.5
+
+    def test_timeout_expired_becomes_a_runtime_error(self, monkeypatch):
+        """Multi-arg, so a corrupted join separator shows (same reason as above)."""
+        monkeypatch.setenv("PM2_MCP_PM2_TIMEOUT", "2.5")
+        expired = subprocess.TimeoutExpired(["pm2", "restart", "svc-a"], 2.5)
+        with (
+            patch("subprocess.run", side_effect=expired),
+            pytest.raises(RuntimeError) as excinfo,
+        ):
+            server._run_pm2("restart", "svc-a")
+
+        assert str(excinfo.value) == "pm2 restart svc-a timed out after 2.5s"
+        assert excinfo.value.__cause__ is None
+        assert excinfo.value.__suppress_context__ is True
+
+    def test_write_tool_reports_the_timeout(self, monkeypatch):
+        proc = _make_process()
+        expired = subprocess.TimeoutExpired(["pm2", "restart", "svc-a"], 30.0)
+        with (
+            patch("pm2_mcp.server._find_service", return_value=proc),
+            patch("subprocess.run", side_effect=expired),
+        ):
+            result = server.restart_service("svc-a")
+
+        assert result == {"ok": False, "error": "pm2 restart svc-a timed out after 30s"}
+
+    @pytest.mark.parametrize(
+        ("script", "hangs"),
+        [
+            # Failing control first: the same stub, not hanging, returns normally. Without
+            # it a PATH that missed the stub would make the timeout case pass vacuously.
+            ("#!/bin/sh\necho stub-ran\n", False),
+            ("#!/bin/sh\necho stub-ran\nexec sleep 30\n", True),
+        ],
+    )
+    def test_a_hung_pm2_is_killed_inside_the_limit(self, tmp_path, monkeypatch, script, hangs):
+        stub = tmp_path / "pm2"
+        stub.write_text(script)
+        stub.chmod(0o755)
+        monkeypatch.setenv("PATH", f"{tmp_path}:/usr/bin:/bin")
+        monkeypatch.setenv("PM2_MCP_PM2_TIMEOUT", "0.5")
+
+        start = time.monotonic()
+        if hangs:
+            with pytest.raises(RuntimeError, match=r"^pm2 jlist timed out after 0\.5s$"):
+                server._run_pm2("jlist")
+        else:
+            assert server._run_pm2("jlist").stdout == "stub-ran\n"
+        assert time.monotonic() - start < 5
+
+
+class TestPm2TimeoutConfig:
+    @pytest.mark.parametrize("raw", [None, "", "   "])
+    def test_unset_or_blank_is_the_default(self, raw):
+        env = {} if raw is None else {"PM2_MCP_PM2_TIMEOUT": raw}
+        assert server._pm2_timeout(env) == 30.0
+
+    @pytest.mark.parametrize(("raw", "value"), [("0.1", 0.1), (" 45 ", 45.0), ("600", 600.0)])
+    def test_valid_values(self, raw, value):
+        assert server._pm2_timeout({"PM2_MCP_PM2_TIMEOUT": raw}) == value
+
+    @pytest.mark.parametrize("raw", ["0", "-1", "600.01", "nan", "inf", "-inf", "abc", "30s"])
+    def test_invalid_values_are_refused(self, raw):
+        with pytest.raises(ValueError) as excinfo:
+            server._pm2_timeout({"PM2_MCP_PM2_TIMEOUT": raw})
+        assert str(excinfo.value) == (
+            f"PM2_MCP_PM2_TIMEOUT={raw!r} must be a number of seconds in (0, 600]"
+        )
+
+    def test_reads_os_environ_by_default(self, monkeypatch):
+        monkeypatch.setenv("PM2_MCP_PM2_TIMEOUT", "7")
+        assert server._pm2_timeout() == 7.0
+
+    def test_refusal_truncates_a_long_value(self):
+        with pytest.raises(ValueError) as excinfo:
+            server._pm2_timeout({"PM2_MCP_PM2_TIMEOUT": "x" * 100})
+        assert repr("x" * 32) in str(excinfo.value)
+        assert "x" * 33 not in str(excinfo.value)
+
+
 # ---------------------------------------------------------------------------
 # Environment allowlist (vikunja#610)
 # ---------------------------------------------------------------------------

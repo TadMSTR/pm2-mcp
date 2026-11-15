@@ -1,3 +1,10 @@
+// Paths are derived, not written out: the checkout is wherever this file is, and logs go
+// to ~/logs. Adjust LOG_FILE if your host keeps logs elsewhere.
+const os = require("os");
+const path = require("path");
+
+const LOG_FILE = path.join(os.homedir(), "logs", "pm2-mcp.log");
+
 module.exports = {
   apps: [
     {
@@ -14,14 +21,15 @@ module.exports = {
       // someone reinstalls. It is the norm for every PM2-run MCP server on this host,
       // so it is recorded rather than moved. Audit: 2026-10-25/pm2-mcp-review-2026-10
       // (F-06, Info).
-      script: "/home/ted/repos/personal/pm2-mcp/.venv/bin/pm2-mcp",
+      script: path.join(__dirname, ".venv", "bin", "pm2-mcp"),
       args: ["--host", "127.0.0.1", "--port", "8486"],
-      cwd: "/home/ted/repos/personal/pm2-mcp",
+      cwd: __dirname,
       interpreter: "none",
 
       // Empty ON PURPOSE — this server requires nothing from the environment.
-      // The variables the source reads are MCP_HOST, MCP_PORT, PM2_MCP_ENV_MODE and
-      // PM2_MCP_ALLOWED_HOSTS, and every one has a safe default when unset. None is
+      // The variables the source reads are MCP_HOST, MCP_PORT, PM2_MCP_ENV_MODE,
+      // PM2_MCP_ALLOWED_HOSTS and PM2_MCP_PM2_TIMEOUT, and every one has a safe default
+      // when unset. None is
       // set in the running process today, so the bind comes from `args` below and
       // the mode is shadow.
       //
@@ -58,11 +66,10 @@ module.exports = {
       // docs/operations.md ("Starting it cleanly"): a bare `pm2 start` re-captures the calling shell's
       // entire environment (the vikunja#767 mechanism) and, since #772 made the
       // shadow log actually reach disk, would now also write the NAMES of every
-      // withheld variable in that shell to /home/ted/logs/pm2-mcp.log. Measured:
-      // started from an agent shell that is 84 names including 12 secret-shaped
-      // ones; started by PM2 at boot it is 64 names and zero secret-shaped. So
-      // do that from a clean, minimal shell or at boot — never from an
-      // interactive agent session.
+      // withheld variable in that shell to LOG_FILE. Started from an agent shell
+      // that list runs to dozens of names, secret-shaped ones among them; started
+      // by PM2 at boot it holds none that are secret-shaped. So do that from a
+      // clean, minimal shell or at boot — never from an interactive agent session.
       //
       // Stated explicitly rather than omitted so that "no env block" can no
       // longer be read two ways. A declaration silent about env is
@@ -85,8 +92,8 @@ module.exports = {
       max_restarts: 10,
       min_uptime: "10s",
 
-      out_file: "/home/ted/logs/pm2-mcp.log",
-      error_file: "/home/ted/logs/pm2-mcp.log",
+      out_file: LOG_FILE,
+      error_file: LOG_FILE,
       merge_logs: true,
       time: true,
     },
