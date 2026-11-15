@@ -483,15 +483,50 @@ def _clean_env(*command: str) -> dict:
     return current
 
 
+# Every pm2 CLI call is bounded (vikunja#1255). Without a timeout, a pm2 that hangs (a
+# wedged daemon, a lock held by another CLI) hangs the tool call with it, and the MCP
+# caller sees nothing until its own client gives up. 30 s is well past any healthy pm2
+# command, `save` and `reload` included. PM2_MCP_PM2_TIMEOUT overrides it; main() refuses
+# to start on a value that is not a number in (0, 600].
+_DEFAULT_PM2_TIMEOUT_S = 30.0
+_MAX_PM2_TIMEOUT_S = 600.0
+
+
+def _pm2_timeout(env: dict | None = None) -> float:
+    """Return the pm2 CLI timeout in seconds. Raises ValueError on an invalid value."""
+    env = os.environ if env is None else env
+    raw = (env.get("PM2_MCP_PM2_TIMEOUT") or "").strip()
+    if not raw:
+        return _DEFAULT_PM2_TIMEOUT_S
+    try:
+        value = float(raw)
+    except ValueError:
+        value = 0.0  # refused below with the out-of-range values
+    # A NaN fails both comparisons, so float("nan") is refused here too.
+    if not 0 < value <= _MAX_PM2_TIMEOUT_S:
+        raise ValueError(
+            f"PM2_MCP_PM2_TIMEOUT={raw[:32]!r} must be a number of seconds in "
+            f"(0, {_MAX_PM2_TIMEOUT_S:g}]"
+        )
+    return value
+
+
 def _run_pm2(*args: str) -> subprocess.CompletedProcess:
-    """Run a pm2 command. Raises RuntimeError if exit code is non-zero."""
-    result = subprocess.run(
-        ["pm2", *args],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",  # explicit — system locale may not be UTF-8
-        env=_clean_env(*args),
-    )
+    """Run a pm2 command. Raises RuntimeError on a non-zero exit code or a timeout."""
+    timeout = _pm2_timeout()
+    try:
+        result = subprocess.run(
+            ["pm2", *args],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",  # explicit — system locale may not be UTF-8
+            env=_clean_env(*args),
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        # subprocess.run has already killed the child. Its partial output is dropped:
+        # the timeout is the diagnosis.
+        raise RuntimeError(f"pm2 {' '.join(args)} timed out after {timeout:g}s") from None
     if result.returncode != 0:
         # SECURITY[accepted]: pm2's stderr is embedded verbatim and reaches the MCP caller
         # through every write tool's `except RuntimeError` branch. Ted's ruling 2026-09-09.
@@ -732,12 +767,18 @@ def get_status() -> dict:
     Reports the bound host/port, the env-allowlist mode (shadow or enforce), the
     PM2 version, the total service count, and a breakdown of services by status.
     Use this to verify setup after installation or a deploy.
+
+    ``degraded`` is true when either pm2 call failed or timed out; ``errors`` then names
+    the failed stage (``version``, ``jlist``) and its message. A degraded result's
+    ``service_count`` of 0 means "could not read", not "no services".
     """
+    errors: dict[str, str] = {}
     try:
         version_result = _run_pm2("--version")
         pm2_version = version_result.stdout.strip()
-    except RuntimeError:
+    except RuntimeError as e:
         pm2_version = "unknown"
+        errors["version"] = str(e)
 
     try:
         services = _get_all_services()
@@ -745,9 +786,14 @@ def get_status() -> dict:
         for s in services:
             status = s.get("pm2_env", {}).get("status", "unknown")
             status_counts[status] = status_counts.get(status, 0) + 1
-    except RuntimeError:
+    except RuntimeError as e:
         services = []
         status_counts = {}
+        errors["jlist"] = str(e)
+
+    if errors:
+        # A wedged daemon used to read as a healthy, empty pm2.
+        _log.warning("get_status degraded: %s", "; ".join(f"{k}: {v}" for k, v in errors.items()))
 
     if _BIND is not None:
         host, port = _BIND
@@ -763,6 +809,8 @@ def get_status() -> dict:
         "pm2_version": pm2_version,
         "service_count": len(services),
         "status_counts": status_counts,
+        "degraded": bool(errors),
+        **({"errors": errors} if errors else {}),
     }
 
 
@@ -786,6 +834,10 @@ def main(argv: list | None = None) -> None:
             f"pm2-mcp: refusing to start: PM2_MCP_ENV_MODE={_ENV_MODE[:32]!r} is not one of "
             f"{', '.join(_ENV_MODES)}. An unrecognised mode would run shadow silently."
         )
+    try:
+        _pm2_timeout()
+    except ValueError as e:
+        raise SystemExit(f"pm2-mcp: refusing to start: {e}") from None
     # argv None makes argparse read sys.argv[1:] itself.
     host, port = _resolve_bind(argv)
     try:

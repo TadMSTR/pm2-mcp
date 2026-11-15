@@ -238,6 +238,17 @@ def test_main_refuses_an_unknown_env_mode(monkeypatch, restored_logger_state, mo
     assert ran == []
 
 
+@pytest.mark.parametrize("raw", ["0", "abc", "601"])
+def test_main_refuses_an_invalid_pm2_timeout(monkeypatch, restored_logger_state, raw):
+    """vikunja#1255: a bad PM2_MCP_PM2_TIMEOUT stops startup, not the first tool call."""
+    ran = []
+    monkeypatch.setattr(server.mcp, "run", lambda **kw: ran.append(kw))
+    monkeypatch.setenv("PM2_MCP_PM2_TIMEOUT", raw)
+    with pytest.raises(SystemExit, match="refusing to start: PM2_MCP_PM2_TIMEOUT"):
+        server.main([])
+    assert ran == []
+
+
 @pytest.mark.parametrize("mode", ["shadow", "enforce"])
 def test_main_starts_in_either_known_mode(monkeypatch, restored_logger_state, mode):
     ran = []

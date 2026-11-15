@@ -118,12 +118,11 @@ succeeds and has its effect in both modes. A child `PATH` that cannot reach pm2 
 verb fail, so the test can see a broken environment. Dropping `PATH` outright cannot be that
 control on a host where pm2 and node are in `/usr/bin`, which is the fallback search path.
 
-Measured on the live process before enforcing: 20 environment variables, of which 13 would be
-withheld and **none** is secret-shaped. So enforcement is not removing credentials that are
-leaking today — it removes the possibility of tomorrow's. The evidence that this matters is
-in the withheld list itself, which contains `SSH_CLIENT`, `SSH_CONNECTION` and
-`XDG_SESSION_*`: this process was started from an interactive session, which is precisely the
-path that produced #767.
+On a process started cleanly, most of what shadow mode would withhold is session plumbing,
+not secrets. So enforcement is less about credentials leaking today than about removing the
+possibility of tomorrow's. Read your own shadow log for the evidence: names such as
+`SSH_CLIENT`, `SSH_CONNECTION` or `XDG_SESSION_*` in the withheld list mean the process was
+started from an interactive session, which is precisely the path that produced #767.
 
 Until enforcement is on, the protection is operational rather than structural: the shipped
 `ecosystem.config.js` declares `env: {}`, and the service is meant to start from PM2 at boot.

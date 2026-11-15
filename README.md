@@ -29,7 +29,7 @@ flowchart LR
 | `list_services` | List all PM2 services. Optional `status_filter`: `"online"`, `"stopped"`, or `"errored"`. |
 | `get_service` | Full detail for one service by name — script path, cwd, args, log file paths, created_at, plus all summary fields. |
 | `get_logs` | Tail recent log output for one registered service. `lines` defaults to 50 (max 500); `include_errors` defaults to `true`. |
-| `get_status` | Server metadata and PM2 health summary — the host/port actually bound, the env-allowlist mode (`env_mode`: `shadow` or `enforce`), PM2 version, total service count, and counts by status. |
+| `get_status` | Server metadata and PM2 health summary — the host/port actually bound, the env-allowlist mode (`env_mode`: `shadow` or `enforce`), PM2 version, total service count, and counts by status. `degraded: true` with `errors` when a pm2 call failed or timed out, so 0 services then means "could not read". |
 
 ### Write
 
@@ -159,6 +159,7 @@ Precedence is per-field, not all-or-nothing: passing only `--host` leaves the po
 | `MCP_PORT` | `8486` | Port for the MCP server |
 | `PM2_MCP_ALLOWED_HOSTS` | unset | Extra `Host` header values to accept, comma-separated, each an exact `name:port`. An entry containing `*` refuses to start. Loopback names and the bound address are always accepted. See [Security](#security). |
 | `PM2_MCP_ENV_MODE` | `shadow` | Environment allowlist mode: `shadow` or `enforce`. Any other value refuses to start. See [Security](#security). |
+| `PM2_MCP_PM2_TIMEOUT` | `30` | Seconds any one `pm2` CLI call may run before it is killed and the tool returns an error. A number in (0, 600]; any other value refuses to start. |
 
 `.env.example` lists the bind variables. The server does not load a `.env` file — set these in
 the process environment (or pass the flags) instead. Blank environment variables are treated
