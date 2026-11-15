@@ -827,6 +827,23 @@ class TestRunPm2Timeout:
             assert server._run_pm2("jlist").stdout == "stub-ran\n"
         assert time.monotonic() - start < 5
 
+    def test_a_grandchild_holding_the_pipe_cannot_outlast_the_limit(self, tmp_path, monkeypatch):
+        """OV-29: the timeout bounds the wait even when the pipe outlives the child.
+
+        The stub backgrounds a sleep that inherits stdout, then exits. EOF never comes
+        until the sleep ends, so a wait on the pipe would take 3 s; the limit is 0.5 s.
+        """
+        stub = tmp_path / "pm2"
+        stub.write_text("#!/bin/sh\nsleep 3 &\necho started\n")
+        stub.chmod(0o755)
+        monkeypatch.setenv("PATH", f"{tmp_path}:/usr/bin:/bin")
+        monkeypatch.setenv("PM2_MCP_PM2_TIMEOUT", "0.5")
+
+        start = time.monotonic()
+        with pytest.raises(RuntimeError, match=r"^pm2 jlist timed out after 0\.5s$"):
+            server._run_pm2("jlist")
+        assert time.monotonic() - start < 2.5
+
 
 class TestPm2TimeoutConfig:
     @pytest.mark.parametrize("raw", [None, "", "   "])
